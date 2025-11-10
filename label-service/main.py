@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import get_settings
-from database import init_db, close_db
+from database import init_db, init_pool, close_pool
 from routes import router
 
 # Configure logging
@@ -28,8 +28,10 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.app_name} v{settings.app_version}...")
     
     try:
-        # Initialize database
-        await init_db()
+        # Initialize database connection pool
+        init_pool()
+        # Initialize database tables
+        init_db()
         logger.info(f"{settings.app_name} started successfully")
         logger.info(f"API documentation available at {settings.docs_url}")
         
@@ -42,7 +44,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info(f"Shutting down {settings.app_name}...")
     try:
-        await close_db()
+        close_pool()
         logger.info(f"{settings.app_name} shutdown complete")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}", exc_info=True)

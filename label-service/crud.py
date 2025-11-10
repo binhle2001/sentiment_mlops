@@ -1,185 +1,258 @@
-"""CRUD operations for labels."""
+"""CRUD operations with raw SQL queries."""
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import UUID
+from datetime import datetime
 
-from sqlalchemy import select, and_, func
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
-from models import Label
 from schemas import LabelCreate, LabelUpdate
 
 logger = logging.getLogger(__name__)
 
 
+def row_to_dict(row) -> Optional[Dict[str, Any]]:
+    """Convert database row to dictionary."""
+    if row is None:
+        return None
+    return dict(row)
+
+
+def rows_to_list(rows) -> List[Dict[str, Any]]:
+    """Convert database rows to list of dictionaries."""
+    return [dict(row) for row in rows] if rows else []
+
+
 class LabelCRUD:
-    """CRUD operations for Label model."""
+    """CRUD operations for Label with raw SQL."""
     
     @staticmethod
-    async def create(db: AsyncSession, label_data: LabelCreate) -> Label:
+    def create(conn, label_data: LabelCreate) -> Dict[str, Any]:
         """Create a new label."""
         # Validate parent exists if parent_id is provided
         if label_data.parent_id:
-            parent = await LabelCRUD.get_by_id(db, label_data.parent_id)
+            parent = LabelCRUD.get_by_id(conn, label_data.parent_id)
             if not parent:
                 raise ValueError(f"Parent label with id {label_data.parent_id} not found")
             
             # Validate hierarchy: level must be parent.level + 1
-            if label_data.level != parent.level + 1:
+            if label_data.level != parent['level'] + 1:
                 raise ValueError(
                     f"Invalid level {label_data.level}. "
-                    f"Parent is level {parent.level}, so child must be level {parent.level + 1}"
+                    f"Parent is level {parent['level']}, so child must be level {parent['level'] + 1}"
                 )
         
-        # Create label
-        label = Label(
-            name=label_data.name,
-            level=label_data.level,
-            parent_id=label_data.parent_id,
-            description=label_data.description
+        query = """
+            INSERT INTO labels (name, level, parent_id, description)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, name, level, parent_id, description, created_at, updated_at
+        """
+        
+        from database import execute_query
+        result = execute_query(
+            conn, 
+            query, 
+            (label_data.name, label_data.level, label_data.parent_id, label_data.description),
+            fetch="one"
         )
         
-        db.add(label)
-        await db.flush()
-        await db.refresh(label)
-        
-        logger.info(f"Created label: {label.name} (id={label.id}, level={label.level})")
+        label = row_to_dict(result)
+        logger.info(f"Created label: {label['name']} (id={label['id']}, level={label['level']})")
         return label
     
     @staticmethod
-    async def get_by_id(db: AsyncSession, label_id: UUID) -> Optional[Label]:
+    def get_by_id(conn, label_id: UUID) -> Optional[Dict[str, Any]]:
         """Get label by ID."""
-        result = await db.execute(
-            select(Label)
-            .options(selectinload(Label.children))
-            .where(Label.id == label_id)
-        )
-        return result.scalar_one_or_none()
+        query = """
+            SELECT id, name, level, parent_id, description, created_at, updated_at
+            FROM labels
+            WHERE id = %s
+        """
+        
+        from database import execute_query
+        result = execute_query(conn, query, (str(label_id),), fetch="one")
+        return row_to_dict(result)
     
     @staticmethod
-    async def get_all(
-        db: AsyncSession,
+    def get_all(
+        conn,
         level: Optional[int] = None,
         parent_id: Optional[UUID] = None,
         skip: int = 0,
         limit: int = 100
-    ) -> List[Label]:
+    ) -> List[Dict[str, Any]]:
         """Get all labels with optional filters."""
-        query = select(Label).options(selectinload(Label.children))
+        conditions = []
+        params = []
         
-        # Apply filters
-        filters = []
         if level is not None:
-            filters.append(Label.level == level)
+            conditions.append("level = %s")
+            params.append(level)
+        
         if parent_id is not None:
-            filters.append(Label.parent_id == parent_id)
+            conditions.append("parent_id = %s")
+            params.append(str(parent_id))
         
-        if filters:
-            query = query.where(and_(*filters))
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
         
-        # Apply pagination
-        query = query.offset(skip).limit(limit).order_by(Label.level, Label.name)
+        query = f"""
+            SELECT id, name, level, parent_id, description, created_at, updated_at
+            FROM labels
+            {where_clause}
+            ORDER BY level, name
+            OFFSET %s LIMIT %s
+        """
+        params.extend([skip, limit])
         
-        result = await db.execute(query)
-        return list(result.scalars().all())
+        from database import execute_query
+        results = execute_query(conn, query, tuple(params), fetch="all")
+        return rows_to_list(results)
     
     @staticmethod
-    async def count(
-        db: AsyncSession,
+    def count(
+        conn,
         level: Optional[int] = None,
         parent_id: Optional[UUID] = None
     ) -> int:
         """Count labels with optional filters."""
-        query = select(func.count(Label.id))
+        conditions = []
+        params = []
         
-        filters = []
         if level is not None:
-            filters.append(Label.level == level)
+            conditions.append("level = %s")
+            params.append(level)
+        
         if parent_id is not None:
-            filters.append(Label.parent_id == parent_id)
+            conditions.append("parent_id = %s")
+            params.append(str(parent_id))
         
-        if filters:
-            query = query.where(and_(*filters))
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
         
-        result = await db.execute(query)
-        return result.scalar_one()
+        query = f"""
+            SELECT COUNT(*) as count
+            FROM labels
+            {where_clause}
+        """
+        
+        from database import execute_query
+        result = execute_query(conn, query, tuple(params) if params else None, fetch="one")
+        return result['count'] if result else 0
     
     @staticmethod
-    async def get_tree(db: AsyncSession) -> List[Label]:
-        """Get all labels as a hierarchical tree (only root level 1 labels)."""
-        # Get all level 1 labels with their children loaded recursively (up to 3 levels)
-        result = await db.execute(
-            select(Label)
-            .options(
-                selectinload(Label.children).selectinload(Label.children)
-            )
-            .where(Label.level == 1)
-            .order_by(Label.name)
-        )
-        return list(result.scalars().all())
+    def get_tree(conn) -> List[Dict[str, Any]]:
+        """Get all labels as a hierarchical tree."""
+        # Get all labels
+        query = """
+            SELECT id, name, level, parent_id, description, created_at, updated_at
+            FROM labels
+            ORDER BY level, name
+        """
+        
+        from database import execute_query
+        results = execute_query(conn, query, fetch="all")
+        labels = rows_to_list(results)
+        
+        # Build tree structure
+        label_dict = {str(label['id']): {**label, 'children': []} for label in labels}
+        tree = []
+        
+        for label in labels:
+            label_with_children = label_dict[str(label['id'])]
+            if label['parent_id'] is None:
+                tree.append(label_with_children)
+            else:
+                parent_id = str(label['parent_id'])
+                if parent_id in label_dict:
+                    label_dict[parent_id]['children'].append(label_with_children)
+        
+        return tree
     
     @staticmethod
-    async def get_children(db: AsyncSession, parent_id: UUID) -> List[Label]:
+    def get_children(conn, parent_id: UUID) -> List[Dict[str, Any]]:
         """Get all children of a parent label."""
-        result = await db.execute(
-            select(Label)
-            .where(Label.parent_id == parent_id)
-            .order_by(Label.name)
-        )
-        return list(result.scalars().all())
+        query = """
+            SELECT id, name, level, parent_id, description, created_at, updated_at
+            FROM labels
+            WHERE parent_id = %s
+            ORDER BY name
+        """
+        
+        from database import execute_query
+        results = execute_query(conn, query, (str(parent_id),), fetch="all")
+        return rows_to_list(results)
     
     @staticmethod
-    async def update(
-        db: AsyncSession,
+    def update(
+        conn,
         label_id: UUID,
         label_data: LabelUpdate
-    ) -> Optional[Label]:
+    ) -> Optional[Dict[str, Any]]:
         """Update a label."""
-        label = await LabelCRUD.get_by_id(db, label_id)
+        label = LabelCRUD.get_by_id(conn, label_id)
         if not label:
             return None
         
-        # Update fields
+        # Build update query dynamically
+        update_fields = []
+        params = []
+        
         update_data = label_data.model_dump(exclude_unset=True)
         for field, value in update_data.items():
-            setattr(label, field, value)
+            update_fields.append(f"{field} = %s")
+            params.append(value)
         
-        await db.flush()
-        await db.refresh(label)
+        if not update_fields:
+            return label
         
-        logger.info(f"Updated label: {label.name} (id={label.id})")
-        return label
+        params.append(str(label_id))
+        
+        query = f"""
+            UPDATE labels
+            SET {', '.join(update_fields)}
+            WHERE id = %s
+            RETURNING id, name, level, parent_id, description, created_at, updated_at
+        """
+        
+        from database import execute_query
+        result = execute_query(conn, query, tuple(params), fetch="one")
+        updated_label = row_to_dict(result)
+        
+        logger.info(f"Updated label: {updated_label['name']} (id={label_id})")
+        return updated_label
     
     @staticmethod
-    async def delete(db: AsyncSession, label_id: UUID) -> bool:
+    def delete(conn, label_id: UUID) -> bool:
         """Delete a label (cascade deletes children)."""
-        label = await LabelCRUD.get_by_id(db, label_id)
+        label = LabelCRUD.get_by_id(conn, label_id)
         if not label:
             return False
         
-        await db.delete(label)
-        await db.flush()
+        query = "DELETE FROM labels WHERE id = %s"
         
-        logger.info(f"Deleted label: {label.name} (id={label_id})")
+        from database import execute_query
+        execute_query(conn, query, (str(label_id),), fetch="none")
+        
+        logger.info(f"Deleted label: {label['name']} (id={label_id})")
         return True
     
     @staticmethod
-    async def exists_by_name_and_parent(
-        db: AsyncSession,
+    def exists_by_name_and_parent(
+        conn,
         name: str,
         parent_id: Optional[UUID]
     ) -> bool:
         """Check if a label with the same name and parent exists."""
-        query = select(Label).where(Label.name == name)
-        
         if parent_id is None:
-            query = query.where(Label.parent_id.is_(None))
+            query = """
+                SELECT id FROM labels
+                WHERE name = %s AND parent_id IS NULL
+            """
+            params = (name,)
         else:
-            query = query.where(Label.parent_id == parent_id)
+            query = """
+                SELECT id FROM labels
+                WHERE name = %s AND parent_id = %s
+            """
+            params = (name, str(parent_id))
         
-        result = await db.execute(query)
-        return result.scalar_one_or_none() is not None
-
-
-
+        from database import execute_query
+        result = execute_query(conn, query, params, fetch="one")
+        return result is not None
