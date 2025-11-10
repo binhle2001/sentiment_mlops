@@ -1,0 +1,263 @@
+import React, { useState, useEffect } from 'react';
+import {
+  Layout,
+  Typography,
+  Button,
+  Space,
+  message,
+  Spin,
+  Card,
+  Statistic,
+  Row,
+  Col,
+  Input,
+} from 'antd';
+import {
+  PlusOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+} from '@ant-design/icons';
+import LabelTree from './LabelTree';
+import LabelForm from './LabelForm';
+import { labelAPI } from '../services/api';
+
+const { Header, Content } = Layout;
+const { Title, Text } = Typography;
+
+const LabelManager = () => {
+  const [labels, setLabels] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [formVisible, setFormVisible] = useState(false);
+  const [editingLabel, setEditingLabel] = useState(null);
+  const [parentLabel, setParentLabel] = useState(null);
+  const [stats, setStats] = useState({ level1: 0, level2: 0, level3: 0, total: 0 });
+  const [searchText, setSearchText] = useState('');
+
+  useEffect(() => {
+    loadLabels();
+    loadStats();
+  }, []);
+
+  const loadLabels = async () => {
+    setLoading(true);
+    try {
+      const tree = await labelAPI.getTree();
+      setLabels(tree);
+    } catch (error) {
+      message.error('Failed to load labels');
+      console.error('Error loading labels:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadStats = async () => {
+    try {
+      const [level1, level2, level3, total] = await Promise.all([
+        labelAPI.getLabels({ level: 1 }),
+        labelAPI.getLabels({ level: 2 }),
+        labelAPI.getLabels({ level: 3 }),
+        labelAPI.getLabels({}),
+      ]);
+      setStats({
+        level1: level1.total,
+        level2: level2.total,
+        level3: level3.total,
+        total: total.total,
+      });
+    } catch (error) {
+      console.error('Error loading stats:', error);
+    }
+  };
+
+  const handleCreate = () => {
+    setEditingLabel(null);
+    setParentLabel(null);
+    setFormVisible(true);
+  };
+
+  const handleEdit = (label) => {
+    setEditingLabel(label);
+    setParentLabel(null);
+    setFormVisible(true);
+  };
+
+  const handleAddChild = (parentLabel) => {
+    setEditingLabel(null);
+    setParentLabel(parentLabel);
+    setFormVisible(true);
+  };
+
+  const handleDelete = async (labelId) => {
+    try {
+      await labelAPI.deleteLabel(labelId);
+      message.success('Label deleted successfully');
+      loadLabels();
+      loadStats();
+    } catch (error) {
+      message.error(error.response?.data?.detail || 'Failed to delete label');
+    }
+  };
+
+  const handleFormSuccess = () => {
+    loadLabels();
+    loadStats();
+  };
+
+  const handleRefresh = () => {
+    loadLabels();
+    loadStats();
+  };
+
+  // Filter labels based on search
+  const filterLabels = (labels, searchText) => {
+    if (!searchText) return labels;
+    
+    return labels
+      .map((label) => {
+        const matchesSearch = label.name.toLowerCase().includes(searchText.toLowerCase());
+        const filteredChildren = label.children ? filterLabels(label.children, searchText) : [];
+        
+        if (matchesSearch || filteredChildren.length > 0) {
+          return {
+            ...label,
+            children: filteredChildren,
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  };
+
+  const filteredLabels = filterLabels(labels, searchText);
+
+  return (
+    <Layout style={{ minHeight: '100vh' }}>
+      <Header
+        style={{
+          background: '#fff',
+          padding: '0 24px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <Title level={2} style={{ margin: 0 }}>
+          Label Management System
+        </Title>
+        <Space>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={handleCreate}
+          >
+            Create Label
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
+            Refresh
+          </Button>
+        </Space>
+      </Header>
+
+      <Content style={{ padding: '24px', backgroundColor: '#f0f2f5' }}>
+        {/* Statistics */}
+        <Row gutter={16} style={{ marginBottom: '24px' }}>
+          <Col span={6}>
+            <Card>
+              <Statistic
+                title="Total Labels"
+                value={stats.total}
+                valueStyle={{ color: '#1890ff' }}
+              />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card>
+              <Statistic
+                title="Level 1"
+                value={stats.level1}
+                valueStyle={{ color: '#1890ff' }}
+              />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card>
+              <Statistic
+                title="Level 2"
+                value={stats.level2}
+                valueStyle={{ color: '#52c41a' }}
+              />
+            </Card>
+          </Col>
+          <Col span={6}>
+            <Card>
+              <Statistic
+                title="Level 3"
+                value={stats.level3}
+                valueStyle={{ color: '#faad14' }}
+              />
+            </Card>
+          </Col>
+        </Row>
+
+        {/* Search */}
+        <Card style={{ marginBottom: '24px' }}>
+          <Input
+            placeholder="Search labels..."
+            prefix={<SearchOutlined />}
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            allowClear
+            size="large"
+          />
+        </Card>
+
+        {/* Label Tree */}
+        <Card
+          title={
+            <Space>
+              <Text strong>Label Hierarchy</Text>
+              <Text type="secondary">
+                ({filteredLabels.length} root labels)
+              </Text>
+            </Space>
+          }
+        >
+          {loading ? (
+            <div style={{ textAlign: 'center', padding: '50px' }}>
+              <Spin size="large" />
+            </div>
+          ) : filteredLabels.length > 0 ? (
+            <LabelTree
+              data={filteredLabels}
+              onEdit={handleEdit}
+              onDelete={handleDelete}
+              onAddChild={handleAddChild}
+              loading={loading}
+            />
+          ) : (
+            <div style={{ textAlign: 'center', padding: '50px' }}>
+              <Text type="secondary">
+                {searchText ? 'No labels found matching your search' : 'No labels yet. Create your first label!'}
+              </Text>
+            </div>
+          )}
+        </Card>
+      </Content>
+
+      {/* Form Modal */}
+      <LabelForm
+        visible={formVisible}
+        onClose={() => setFormVisible(false)}
+        onSuccess={handleFormSuccess}
+        editingLabel={editingLabel}
+        parentLabel={parentLabel}
+      />
+    </Layout>
+  );
+};
+
+export default LabelManager;
+
+
