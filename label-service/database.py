@@ -2,11 +2,15 @@
 import logging
 from contextlib import contextmanager
 from typing import Generator
+from uuid import UUID
 import psycopg2
 from psycopg2 import pool
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, register_uuid
 
 from config import get_settings
+
+# Register UUID adapter for psycopg2
+register_uuid()
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -113,8 +117,11 @@ def execute_query(conn, query: str, params: tuple = None, fetch: str = "all"):
 def init_db():
     """Initialize database tables."""
     create_table_sql = """
+    -- Enable UUID extension
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    
     CREATE TABLE IF NOT EXISTS labels (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         name VARCHAR(255) NOT NULL,
         level INTEGER NOT NULL CHECK (level IN (1, 2, 3)),
         description TEXT,

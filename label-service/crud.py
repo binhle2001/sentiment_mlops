@@ -47,10 +47,13 @@ class LabelCRUD:
         """
         
         from database import execute_query
+        # Convert UUID to string if not None
+        parent_id_str = str(label_data.parent_id) if label_data.parent_id else None
+        
         result = execute_query(
             conn, 
             query, 
-            (label_data.name, label_data.level, label_data.parent_id, label_data.description),
+            (label_data.name, label_data.level, parent_id_str, label_data.description),
             fetch="one"
         )
         
@@ -89,7 +92,8 @@ class LabelCRUD:
         
         if parent_id is not None:
             conditions.append("parent_id = %s")
-            params.append(str(parent_id))
+            # Convert UUID to string
+            params.append(str(parent_id) if parent_id else None)
         
         where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
         
@@ -122,7 +126,8 @@ class LabelCRUD:
         
         if parent_id is not None:
             conditions.append("parent_id = %s")
-            params.append(str(parent_id))
+            # Convert UUID to string
+            params.append(str(parent_id) if parent_id else None)
         
         where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
         
@@ -251,7 +256,8 @@ class LabelCRUD:
                 SELECT id FROM labels
                 WHERE name = %s AND parent_id = %s
             """
-            params = (name, str(parent_id))
+            # Convert UUID to string
+            params = (name, str(parent_id) if parent_id else None)
         
         from database import execute_query
         result = execute_query(conn, query, params, fetch="one")
