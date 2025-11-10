@@ -92,7 +92,7 @@ const LabelManager = () => {
   const handleAddChild = (parentLabel) => {
     setEditingLabel(null);
     setParentLabel(parentLabel);
-    setFormVisible(true);
+    setBulkFormVisible(true);  // Open bulk form instead of single form
   };
 
   const handleDelete = async (labelId) => {
@@ -273,8 +273,12 @@ const LabelManager = () => {
       {/* Bulk Create Form Modal */}
       <BulkLabelForm
         visible={bulkFormVisible}
-        onClose={() => setBulkFormVisible(false)}
+        onClose={() => {
+          setBulkFormVisible(false);
+          setParentLabel(null);
+        }}
         onSuccess={handleFormSuccess}
+        parentLabel={parentLabel}
       />
     </Layout>
   );
