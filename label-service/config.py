@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     docs_url: str = Field(default="/docs", description="API documentation URL")
     redoc_url: str = Field(default="/redoc", description="ReDoc documentation URL")
     
+    # Sentiment Service settings
+    sentiment_service_url: str = Field(
+        default="http://localhost:8000/api/v1",
+        description="URL of the sentiment analysis service"
+    )
+    
     @property
     def database_url(self) -> str:
         """Construct PostgreSQL database URL."""

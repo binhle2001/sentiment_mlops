@@ -80,6 +80,27 @@ export const labelAPI = {
   },
 };
 
+// Feedback Sentiment API endpoints
+export const feedbackAPI = {
+  // Submit feedback for sentiment analysis
+  submitFeedback: (feedbackText, feedbackSource) => {
+    return api.post('/feedbacks', {
+      feedback_text: feedbackText,
+      feedback_source: feedbackSource,
+    });
+  },
+
+  // Get all feedbacks with optional filters
+  getFeedbacks: (params = {}) => {
+    return api.get('/feedbacks', { params });
+  },
+
+  // Get feedback by ID
+  getFeedback: (id) => {
+    return api.get(`/feedbacks/${id}`);
+  },
+};
+
 export default api;
 
 

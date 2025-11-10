@@ -211,6 +211,39 @@ def init_db():
                     logger.info("Database connection OK - labels table configured correctly")
                 else:
                     logger.warning("Labels table does not exist - should be created by docker-entrypoint-initdb.d")
+                
+                # Check if feedback_sentiments table exists
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'feedback_sentiments'
+                    );
+                """)
+                feedback_table_exists = cur.fetchone()[0]
+                
+                if not feedback_table_exists:
+                    logger.info("Creating feedback_sentiments table...")
+                    cur.execute("""
+                        CREATE TABLE feedback_sentiments (
+                            id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                            feedback_text TEXT NOT NULL,
+                            sentiment_label VARCHAR(50) NOT NULL,
+                            confidence_score FLOAT NOT NULL,
+                            feedback_source VARCHAR(50) NOT NULL,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        );
+                        
+                        CREATE INDEX idx_feedback_sentiments_source ON feedback_sentiments(feedback_source);
+                        CREATE INDEX idx_feedback_sentiments_label ON feedback_sentiments(sentiment_label);
+                        CREATE INDEX idx_feedback_sentiments_created_at ON feedback_sentiments(created_at DESC);
+                        
+                        COMMENT ON TABLE feedback_sentiments IS 'Customer feedback with sentiment analysis results';
+                        COMMENT ON COLUMN feedback_sentiments.sentiment_label IS 'Sentiment classification: POSITIVE, NEGATIVE, NEUTRAL, EXTREMELY_NEGATIVE';
+                        COMMENT ON COLUMN feedback_sentiments.feedback_source IS 'Source of feedback: web, app, map, form khảo sát, tổng đài';
+                    """)
+                    logger.info("feedback_sentiments table created successfully")
+                else:
+                    logger.info("feedback_sentiments table already exists")
             
             conn.commit()
     except Exception as e:

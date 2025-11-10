@@ -2,6 +2,7 @@
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
+from enum import Enum
 
 from pydantic import BaseModel, Field, validator
 
@@ -108,6 +109,52 @@ class BulkLabelResponse(BaseModel):
 
 # Update forward references for recursive model
 LabelTreeResponse.model_rebuild()
+
+
+# --- Feedback Sentiment Schemas ---
+
+class FeedbackSource(str, Enum):
+    """Enum for feedback sources."""
+    WEB = "web"
+    APP = "app"
+    MAP = "map"
+    SURVEY_FORM = "form khảo sát"
+    CALL_CENTER = "tổng đài"
+
+
+class SentimentLabel(str, Enum):
+    """Enum for sentiment labels."""
+    POSITIVE = "POSITIVE"
+    NEGATIVE = "NEGATIVE"
+    NEUTRAL = "NEUTRAL"
+    EXTREMELY_NEGATIVE = "EXTREMELY_NEGATIVE"
+
+
+class FeedbackSentimentCreate(BaseModel):
+    """Schema for creating a feedback sentiment."""
+    feedback_text: str = Field(..., min_length=1, description="Feedback text from customer")
+    feedback_source: FeedbackSource = Field(..., description="Source of the feedback")
+
+
+class FeedbackSentimentResponse(BaseModel):
+    """Schema for feedback sentiment response."""
+    id: UUID
+    feedback_text: str
+    sentiment_label: SentimentLabel
+    confidence_score: float
+    feedback_source: FeedbackSource
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class FeedbackSentimentListResponse(BaseModel):
+    """Schema for list of feedback sentiments response."""
+    feedbacks: List[FeedbackSentimentResponse]
+    total: int
+    sentiment_label: Optional[SentimentLabel] = None
+    feedback_source: Optional[FeedbackSource] = None
 
 
 

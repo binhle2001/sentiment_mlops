@@ -4,7 +4,7 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
 from datetime import datetime
 
-from schemas import LabelCreate, LabelUpdate
+from schemas import LabelCreate, LabelUpdate, FeedbackSentimentCreate
 
 logger = logging.getLogger(__name__)
 
@@ -312,3 +312,112 @@ class LabelCRUD:
                 })
         
         return results
+
+
+class FeedbackSentimentCRUD:
+    """CRUD operations for Feedback Sentiment with raw SQL."""
+    
+    @staticmethod
+    def create(
+        conn,
+        feedback_data: FeedbackSentimentCreate,
+        sentiment_label: str,
+        confidence_score: float
+    ) -> Dict[str, Any]:
+        """Create a new feedback sentiment record."""
+        query = """
+            INSERT INTO feedback_sentiments (feedback_text, sentiment_label, confidence_score, feedback_source)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id, feedback_text, sentiment_label, confidence_score, feedback_source, created_at
+        """
+        
+        from database import execute_query
+        
+        result = execute_query(
+            conn,
+            query,
+            (feedback_data.feedback_text, sentiment_label, confidence_score, feedback_data.feedback_source.value),
+            fetch="one"
+        )
+        
+        feedback = row_to_dict(result)
+        logger.info(f"Created feedback sentiment: id={feedback['id']}, label={sentiment_label}")
+        return feedback
+    
+    @staticmethod
+    def get_by_id(conn, feedback_id: UUID) -> Optional[Dict[str, Any]]:
+        """Get feedback sentiment by ID."""
+        query = """
+            SELECT id, feedback_text, sentiment_label, confidence_score, feedback_source, created_at
+            FROM feedback_sentiments
+            WHERE id = %s
+        """
+        
+        from database import execute_query
+        result = execute_query(conn, query, (str(feedback_id),), fetch="one")
+        return row_to_dict(result)
+    
+    @staticmethod
+    def get_all(
+        conn,
+        sentiment_label: Optional[str] = None,
+        feedback_source: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """Get all feedback sentiments with optional filters."""
+        conditions = []
+        params = []
+        
+        if sentiment_label is not None:
+            conditions.append("sentiment_label = %s")
+            params.append(sentiment_label)
+        
+        if feedback_source is not None:
+            conditions.append("feedback_source = %s")
+            params.append(feedback_source)
+        
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+        
+        query = f"""
+            SELECT id, feedback_text, sentiment_label, confidence_score, feedback_source, created_at
+            FROM feedback_sentiments
+            {where_clause}
+            ORDER BY created_at DESC
+            OFFSET %s LIMIT %s
+        """
+        params.extend([skip, limit])
+        
+        from database import execute_query
+        results = execute_query(conn, query, tuple(params), fetch="all")
+        return rows_to_list(results)
+    
+    @staticmethod
+    def count(
+        conn,
+        sentiment_label: Optional[str] = None,
+        feedback_source: Optional[str] = None
+    ) -> int:
+        """Count feedback sentiments with optional filters."""
+        conditions = []
+        params = []
+        
+        if sentiment_label is not None:
+            conditions.append("sentiment_label = %s")
+            params.append(sentiment_label)
+        
+        if feedback_source is not None:
+            conditions.append("feedback_source = %s")
+            params.append(feedback_source)
+        
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+        
+        query = f"""
+            SELECT COUNT(*) as count
+            FROM feedback_sentiments
+            {where_clause}
+        """
+        
+        from database import execute_query
+        result = execute_query(conn, query, tuple(params) if params else None, fetch="one")
+        return result['count'] if result else 0

@@ -3,11 +3,12 @@ import logging
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
+import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from database import get_db
-from crud import LabelCRUD
+from crud import LabelCRUD, FeedbackSentimentCRUD
 from schemas import (
     LabelCreate,
     LabelUpdate,
@@ -17,6 +18,11 @@ from schemas import (
     HealthResponse,
     BulkLabelCreate,
     BulkLabelResponse,
+    FeedbackSentimentCreate,
+    FeedbackSentimentResponse,
+    FeedbackSentimentListResponse,
+    FeedbackSource,
+    SentimentLabel,
 )
 from config import get_settings
 
@@ -263,4 +269,143 @@ def delete_label(label_id: UUID):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete label"
+        )
+
+
+# --- Feedback Sentiment Routes ---
+
+async def call_sentiment_service(text: str) -> dict:
+    """Call the sentiment analysis service to classify text."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{settings.sentiment_service_url}/classify",
+                json={"text": text}
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        logger.error(f"Error calling sentiment service: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Sentiment analysis service is unavailable"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error calling sentiment service: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to analyze sentiment"
+        )
+
+
+@router.post(
+    "/feedbacks",
+    response_model=FeedbackSentimentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Submit feedback and analyze sentiment"
+)
+async def create_feedback_sentiment(feedback_data: FeedbackSentimentCreate):
+    """Submit customer feedback and get sentiment analysis."""
+    try:
+        # Call sentiment service to classify the feedback
+        sentiment_result = await call_sentiment_service(feedback_data.feedback_text)
+        
+        # Extract sentiment label and score
+        sentiment_label = sentiment_result.get("label")
+        confidence_score = sentiment_result.get("score")
+        
+        if not sentiment_label or confidence_score is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Invalid response from sentiment service"
+            )
+        
+        # Save to database
+        with get_db() as conn:
+            feedback = FeedbackSentimentCRUD.create(
+                conn,
+                feedback_data,
+                sentiment_label,
+                confidence_score
+            )
+            return feedback
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating feedback sentiment: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create feedback"
+        )
+
+
+@router.get(
+    "/feedbacks",
+    response_model=FeedbackSentimentListResponse,
+    summary="Get all feedback sentiments with filters"
+)
+def get_feedback_sentiments(
+    sentiment_label: Optional[SentimentLabel] = Query(None, description="Filter by sentiment label"),
+    feedback_source: Optional[FeedbackSource] = Query(None, description="Filter by feedback source"),
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of records"),
+):
+    """Get all feedback sentiments with optional filters."""
+    try:
+        with get_db() as conn:
+            # Convert enums to values for database query
+            label_value = sentiment_label.value if sentiment_label else None
+            source_value = feedback_source.value if feedback_source else None
+            
+            feedbacks = FeedbackSentimentCRUD.get_all(
+                conn,
+                sentiment_label=label_value,
+                feedback_source=source_value,
+                skip=skip,
+                limit=limit
+            )
+            total = FeedbackSentimentCRUD.count(
+                conn,
+                sentiment_label=label_value,
+                feedback_source=source_value
+            )
+            
+            return FeedbackSentimentListResponse(
+                feedbacks=feedbacks,
+                total=total,
+                sentiment_label=sentiment_label,
+                feedback_source=feedback_source
+            )
+    except Exception as e:
+        logger.error(f"Error getting feedback sentiments: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve feedbacks"
+        )
+
+
+@router.get(
+    "/feedbacks/{feedback_id}",
+    response_model=FeedbackSentimentResponse,
+    summary="Get feedback sentiment by ID"
+)
+def get_feedback_sentiment(feedback_id: UUID):
+    """Get a specific feedback sentiment by ID."""
+    try:
+        with get_db() as conn:
+            feedback = FeedbackSentimentCRUD.get_by_id(conn, feedback_id)
+            if not feedback:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Feedback with id {feedback_id} not found"
+                )
+            return feedback
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting feedback {feedback_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve feedback"
         )

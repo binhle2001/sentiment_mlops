@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Layout,
   Typography,
   Button,
   Space,
@@ -23,8 +22,7 @@ import LabelForm from './LabelForm';
 import BulkLabelForm from './BulkLabelForm';
 import { labelAPI } from '../services/api';
 
-const { Header, Content } = Layout;
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
 const LabelManager = () => {
   const [labels, setLabels] = useState([]);
@@ -139,20 +137,9 @@ const LabelManager = () => {
   const filteredLabels = filterLabels(labels, searchText);
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Header
-        style={{
-          background: '#fff',
-          padding: '0 24px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-        }}
-      >
-        <Title level={2} style={{ margin: 0 }}>
-          Label Management System
-        </Title>
+    <div style={{ padding: '24px', backgroundColor: '#f0f2f5', minHeight: '100vh' }}>
+      {/* Action Buttons */}
+      <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'flex-end' }}>
         <Space>
           <Button
             type="primary"
@@ -173,9 +160,7 @@ const LabelManager = () => {
             Refresh
           </Button>
         </Space>
-      </Header>
-
-      <Content style={{ padding: '24px', backgroundColor: '#f0f2f5' }}>
+      </div>
         {/* Statistics */}
         <Row gutter={16} style={{ marginBottom: '24px' }}>
           <Col span={6}>
@@ -259,7 +244,6 @@ const LabelManager = () => {
             </div>
           )}
         </Card>
-      </Content>
 
       {/* Form Modal */}
       <LabelForm
@@ -280,7 +264,7 @@ const LabelManager = () => {
         onSuccess={handleFormSuccess}
         parentLabel={parentLabel}
       />
-    </Layout>
+    </div>
   );
 };
 
