@@ -65,3 +65,4 @@ async def close_db() -> None:
     logger.info("Database connection closed")
 
 
+
