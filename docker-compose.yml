@@ -17,6 +17,8 @@ services:
       - ./db/init:/docker-entrypoint-initdb.d
     networks:
       - label_network
+    env_file:
+      - .env
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -38,10 +40,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: 5432
-      API_PREFIX: ${LABEL_API_PREFIX}
-      LOG_LEVEL: ${LABEL_LOG_LEVEL}
-      DEBUG: ${LABEL_DEBUG}
-      CORS_ORIGINS: ${CORS_ORIGINS}
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,6 +51,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    env_file:
+      - .env
 
   # Label Management Frontend
   label-frontend:
@@ -69,6 +69,8 @@ services:
       - label-backend
     networks:
       - label_network
+    env_file:
+      - .env
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80"]
       interval: 30s

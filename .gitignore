@@ -4,3 +4,4 @@ sentiment-model
 bge-m3-finetuned-transformer.zip
 **/__pycache__/*
 label-frontend/node_modules
+.env
