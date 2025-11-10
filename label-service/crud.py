@@ -108,10 +108,12 @@ class LabelCRUD:
     @staticmethod
     async def get_tree(db: AsyncSession) -> List[Label]:
         """Get all labels as a hierarchical tree (only root level 1 labels)."""
-        # Get all level 1 labels with their children loaded recursively
+        # Get all level 1 labels with their children loaded recursively (up to 3 levels)
         result = await db.execute(
             select(Label)
-            .options(selectinload(Label.children))
+            .options(
+                selectinload(Label.children).selectinload(Label.children)
+            )
             .where(Label.level == 1)
             .order_by(Label.name)
         )
