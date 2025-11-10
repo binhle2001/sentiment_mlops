@@ -63,6 +63,8 @@ async def create_label(
         label = await LabelCRUD.create(db, label_data)
         await db.commit()
         return label
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
