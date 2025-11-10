@@ -149,6 +149,65 @@ def init_db():
                         """)
                         logger.info("UUID default added successfully")
                     
+                    # Check and add default for created_at
+                    cur.execute("""
+                        SELECT column_default 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'labels' AND column_name = 'created_at';
+                    """)
+                    created_default = cur.fetchone()[0]
+                    
+                    if created_default is None or 'CURRENT_TIMESTAMP' not in str(created_default).upper():
+                        logger.info("Adding CURRENT_TIMESTAMP default to created_at column...")
+                        cur.execute("""
+                            ALTER TABLE labels 
+                            ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP;
+                        """)
+                        logger.info("created_at default added successfully")
+                    
+                    # Check and add default for updated_at
+                    cur.execute("""
+                        SELECT column_default 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'labels' AND column_name = 'updated_at';
+                    """)
+                    updated_default = cur.fetchone()[0]
+                    
+                    if updated_default is None or 'CURRENT_TIMESTAMP' not in str(updated_default).upper():
+                        logger.info("Adding CURRENT_TIMESTAMP default to updated_at column...")
+                        cur.execute("""
+                            ALTER TABLE labels 
+                            ALTER COLUMN updated_at SET DEFAULT CURRENT_TIMESTAMP;
+                        """)
+                        logger.info("updated_at default added successfully")
+                    
+                    # Ensure update trigger exists
+                    cur.execute("""
+                        SELECT EXISTS (
+                            SELECT 1 FROM pg_trigger 
+                            WHERE tgname = 'update_labels_updated_at'
+                        );
+                    """)
+                    trigger_exists = cur.fetchone()[0]
+                    
+                    if not trigger_exists:
+                        logger.info("Creating updated_at trigger...")
+                        cur.execute("""
+                            CREATE OR REPLACE FUNCTION update_updated_at_column()
+                            RETURNS TRIGGER AS $$
+                            BEGIN
+                                NEW.updated_at = CURRENT_TIMESTAMP;
+                                RETURN NEW;
+                            END;
+                            $$ language 'plpgsql';
+                            
+                            CREATE TRIGGER update_labels_updated_at 
+                                BEFORE UPDATE ON labels 
+                                FOR EACH ROW 
+                                EXECUTE FUNCTION update_updated_at_column();
+                        """)
+                        logger.info("Trigger created successfully")
+                    
                     logger.info("Database connection OK - labels table configured correctly")
                 else:
                     logger.warning("Labels table does not exist - should be created by docker-entrypoint-initdb.d")
