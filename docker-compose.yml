@@ -56,20 +56,17 @@ services:
     env_file:
       - .env
 
-  # Label Management Frontend
+  # Label Management Frontend (Production with Nginx)
   label-frontend:
     build:
       context: ./label-frontend
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
     container_name: label_frontend
     restart: unless-stopped
     ports:
-      - "${LABEL_FRONTEND_PORT}:5173"
-    volumes:
-      - ./label-frontend:/app
-      - /app/node_modules
-    environment:
-      - VITE_API_URL=${VITE_API_URL}
+      - "${LABEL_FRONTEND_PORT}:80"
     depends_on:
       - label-backend
     networks:
@@ -77,10 +74,29 @@ services:
     env_file:
       - .env
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5173"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80"]
       interval: 30s
       timeout: 10s
       retries: 3
+  
+  # Label Management Frontend (Development with Hot Reload) - Uncomment to use
+  # label-frontend-dev:
+  #   build:
+  #     context: ./label-frontend
+  #     dockerfile: Dockerfile.dev
+  #   container_name: label_frontend_dev
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5173:5173"
+  #   volumes:
+  #     - ./label-frontend:/app
+  #     - /app/node_modules
+  #   environment:
+  #     - VITE_API_URL=${VITE_API_URL}
+  #   depends_on:
+  #     - label-backend
+  #   networks:
+  #     - label_network
 
 networks:
   label_network:
