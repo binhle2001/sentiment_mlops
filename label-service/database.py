@@ -115,61 +115,22 @@ def execute_query(conn, query: str, params: tuple = None, fetch: str = "all"):
 
 
 def init_db():
-    """Initialize database tables."""
-    create_table_sql = """
-    -- Enable UUID extension
-    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-    
-    CREATE TABLE IF NOT EXISTS labels (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        name VARCHAR(255) NOT NULL,
-        level INTEGER NOT NULL CHECK (level IN (1, 2, 3)),
-        description TEXT,
-        parent_id UUID REFERENCES labels(id) ON DELETE CASCADE,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        
-        -- Constraints
-        CONSTRAINT unique_name_per_parent UNIQUE (name, parent_id),
-        CONSTRAINT check_valid_level CHECK (level IN (1, 2, 3)),
-        CONSTRAINT check_level_1_no_parent CHECK (
-            (level = 1 AND parent_id IS NULL) OR (level > 1)
-        ),
-        CONSTRAINT check_level_2_3_has_parent CHECK (
-            (level = 1) OR (level > 1 AND parent_id IS NOT NULL)
-        )
-    );
-    
-    -- Create indexes
-    CREATE INDEX IF NOT EXISTS idx_labels_id ON labels(id);
-    CREATE INDEX IF NOT EXISTS idx_labels_name ON labels(name);
-    CREATE INDEX IF NOT EXISTS idx_labels_level ON labels(level);
-    CREATE INDEX IF NOT EXISTS idx_labels_parent_id ON labels(parent_id);
-    CREATE INDEX IF NOT EXISTS idx_labels_parent_level ON labels(parent_id, level);
-    CREATE INDEX IF NOT EXISTS idx_labels_created_at ON labels(created_at);
-    
-    -- Create trigger for updated_at
-    CREATE OR REPLACE FUNCTION update_updated_at_column()
-    RETURNS TRIGGER AS $$
-    BEGIN
-        NEW.updated_at = CURRENT_TIMESTAMP;
-        RETURN NEW;
-    END;
-    $$ language 'plpgsql';
-    
-    DROP TRIGGER IF EXISTS update_labels_updated_at ON labels;
-    CREATE TRIGGER update_labels_updated_at
-        BEFORE UPDATE ON labels
-        FOR EACH ROW
-        EXECUTE FUNCTION update_updated_at_column();
-    """
-    
+    """Check database connection and verify tables exist."""
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                cur.execute(create_table_sql)
-            conn.commit()
-        logger.info("Database tables initialized successfully")
+                # Just check if labels table exists
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'labels'
+                    );
+                """)
+                exists = cur.fetchone()[0]
+                if exists:
+                    logger.info("Database connection OK - labels table exists")
+                else:
+                    logger.warning("Labels table does not exist - should be created by docker-entrypoint-initdb.d")
     except Exception as e:
-        logger.error(f"Error initializing database: {e}", exc_info=True)
+        logger.error(f"Error checking database: {e}", exc_info=True)
         raise

@@ -40,15 +40,7 @@ class Settings(BaseSettings):
     
     @property
     def database_url(self) -> str:
-        """Construct PostgreSQL async database URL."""
-        return (
-            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
-    
-    @property
-    def sync_database_url(self) -> str:
-        """Construct PostgreSQL sync database URL for Alembic."""
+        """Construct PostgreSQL database URL."""
         return (
             f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"

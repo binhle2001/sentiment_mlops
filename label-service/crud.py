@@ -1,7 +1,7 @@
 """CRUD operations with raw SQL queries."""
 import logging
 from typing import List, Optional, Dict, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import datetime
 
 from schemas import LabelCreate, LabelUpdate
