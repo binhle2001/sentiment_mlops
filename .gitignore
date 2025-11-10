@@ -3,3 +3,4 @@ db
 sentiment-model
 bge-m3-finetuned-transformer.zip
 **/__pycache__/*
+.env
