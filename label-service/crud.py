@@ -262,3 +262,53 @@ class LabelCRUD:
         from database import execute_query
         result = execute_query(conn, query, params, fetch="one")
         return result is not None
+    
+    @staticmethod
+    def bulk_create(conn, labels_data: List[LabelCreate]) -> List[Dict[str, Any]]:
+        """Create multiple labels at once.
+        
+        Returns list of results with success status and created label or error message.
+        """
+        results = []
+        
+        for idx, label_data in enumerate(labels_data):
+            try:
+                # Check if label with same name and parent already exists
+                exists = LabelCRUD.exists_by_name_and_parent(
+                    conn, label_data.name, label_data.parent_id
+                )
+                if exists:
+                    results.append({
+                        'success': False,
+                        'error': f"Label '{label_data.name}' already exists under this parent",
+                        'index': idx,
+                        'label': None
+                    })
+                    continue
+                
+                # Create label
+                label = LabelCRUD.create(conn, label_data)
+                results.append({
+                    'success': True,
+                    'error': None,
+                    'index': idx,
+                    'label': label
+                })
+                
+            except ValueError as e:
+                results.append({
+                    'success': False,
+                    'error': str(e),
+                    'index': idx,
+                    'label': None
+                })
+            except Exception as e:
+                logger.error(f"Error creating label at index {idx}: {e}", exc_info=True)
+                results.append({
+                    'success': False,
+                    'error': f"Failed to create label: {str(e)}",
+                    'index': idx,
+                    'label': None
+                })
+        
+        return results

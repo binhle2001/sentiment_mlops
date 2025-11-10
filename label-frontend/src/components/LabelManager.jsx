@@ -16,9 +16,11 @@ import {
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
+  AppstoreAddOutlined,
 } from '@ant-design/icons';
 import LabelTree from './LabelTree';
 import LabelForm from './LabelForm';
+import BulkLabelForm from './BulkLabelForm';
 import { labelAPI } from '../services/api';
 
 const { Header, Content } = Layout;
@@ -28,6 +30,7 @@ const LabelManager = () => {
   const [labels, setLabels] = useState([]);
   const [loading, setLoading] = useState(false);
   const [formVisible, setFormVisible] = useState(false);
+  const [bulkFormVisible, setBulkFormVisible] = useState(false);
   const [editingLabel, setEditingLabel] = useState(null);
   const [parentLabel, setParentLabel] = useState(null);
   const [stats, setStats] = useState({ level1: 0, level2: 0, level3: 0, total: 0 });
@@ -74,6 +77,10 @@ const LabelManager = () => {
     setEditingLabel(null);
     setParentLabel(null);
     setFormVisible(true);
+  };
+
+  const handleBulkCreate = () => {
+    setBulkFormVisible(true);
   };
 
   const handleEdit = (label) => {
@@ -153,6 +160,14 @@ const LabelManager = () => {
             onClick={handleCreate}
           >
             Create Label
+          </Button>
+          <Button
+            type="primary"
+            icon={<AppstoreAddOutlined />}
+            onClick={handleBulkCreate}
+            style={{ background: '#52c41a', borderColor: '#52c41a' }}
+          >
+            Bulk Create
           </Button>
           <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
             Refresh
@@ -253,6 +268,13 @@ const LabelManager = () => {
         onSuccess={handleFormSuccess}
         editingLabel={editingLabel}
         parentLabel={parentLabel}
+      />
+
+      {/* Bulk Create Form Modal */}
+      <BulkLabelForm
+        visible={bulkFormVisible}
+        onClose={() => setBulkFormVisible(false)}
+        onSuccess={handleFormSuccess}
       />
     </Layout>
   );

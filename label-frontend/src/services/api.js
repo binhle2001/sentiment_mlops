@@ -59,6 +59,11 @@ export const labelAPI = {
     return api.post('/labels', data);
   },
 
+  // Create multiple labels at once
+  createLabelsBulk: (labels) => {
+    return api.post('/labels/bulk', { labels });
+  },
+
   // Update label
   updateLabel: (id, data) => {
     return api.put(`/labels/${id}`, data);

@@ -15,6 +15,8 @@ from schemas import (
     LabelTreeResponse,
     LabelListResponse,
     HealthResponse,
+    BulkLabelCreate,
+    BulkLabelResponse,
 )
 from config import get_settings
 
@@ -66,6 +68,41 @@ def create_label(label_data: LabelCreate):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create label"
+        )
+
+
+@router.post(
+    "/labels/bulk",
+    response_model=BulkLabelResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create multiple labels at once"
+)
+def create_labels_bulk(bulk_data: BulkLabelCreate):
+    """Create multiple labels in a single request.
+    
+    This endpoint allows you to create multiple labels at once.
+    Each label is validated and created independently.
+    If some labels fail, others will still be created successfully.
+    """
+    try:
+        with get_db() as conn:
+            results = LabelCRUD.bulk_create(conn, bulk_data.labels)
+            
+            # Count successes and failures
+            successful = sum(1 for r in results if r['success'])
+            failed = sum(1 for r in results if not r['success'])
+            
+            return BulkLabelResponse(
+                total=len(bulk_data.labels),
+                successful=successful,
+                failed=failed,
+                results=results
+            )
+    except Exception as e:
+        logger.error(f"Error in bulk label creation: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process bulk label creation"
         )
 
 

@@ -85,6 +85,27 @@ class ErrorResponse(BaseModel):
     detail: Optional[str] = None
 
 
+class BulkLabelCreate(BaseModel):
+    """Schema for creating multiple labels at once."""
+    labels: List[LabelCreate] = Field(..., min_items=1, max_items=100, description="List of labels to create")
+
+
+class BulkLabelResult(BaseModel):
+    """Result for a single label in bulk operation."""
+    success: bool
+    label: Optional[LabelResponse] = None
+    error: Optional[str] = None
+    index: int = Field(..., description="Index in the input array")
+
+
+class BulkLabelResponse(BaseModel):
+    """Response for bulk label creation."""
+    total: int = Field(..., description="Total labels submitted")
+    successful: int = Field(..., description="Number of successfully created labels")
+    failed: int = Field(..., description="Number of failed labels")
+    results: List[BulkLabelResult] = Field(..., description="Detailed results for each label")
+
+
 # Update forward references for recursive model
 LabelTreeResponse.model_rebuild()
 
