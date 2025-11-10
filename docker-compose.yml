@@ -37,11 +37,36 @@ services:
     volumes:
       - ./sentiment-model:/models/sentiments
     environment:
-      SENTIMENT_MODEL_PATH: /models/sentiments
+      SENTIMENT_MODEL_PATH: /models/sentiments https://drive.google.com/file/d/1nueIquv6ddVDM0zwyfoe7k3G91fSBCz_/view?usp=sharing
     networks:
       - label_network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${SENTIMENT_PORT}/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    env_file:
+      - .env
+
+  # Embedding Service
+  embedding-service:
+    build:
+      context: ./embedding
+      dockerfile: Dockerfile
+    container_name: embedding_service
+    restart: unless-stopped
+    ports:
+      - "${EMBEDDING_EXTERNAL_PORT}:${EMBEDDING_PORT}"
+    volumes:
+      - ./bge-m3-finetuned-transformer:/models/embedding
+    environment:
+      EMBEDDING_MODEL_PATH: /models/embedding/vn_embedding_bgem3
+      EMBEDDING_PORT: ${EMBEDDING_PORT}
+    networks:
+      - label_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${EMBEDDING_PORT}/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -67,10 +92,13 @@ services:
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: 5432
       SENTIMENT_SERVICE_URL: http://sentiment-service:${SENTIMENT_PORT}/api/v1
+      EMBEDDING_SERVICE_URL: http://embedding-service:${EMBEDDING_PORT}/api/v1
     depends_on:
       postgres:
         condition: service_healthy
       sentiment-service:
+        condition: service_healthy
+      embedding-service:
         condition: service_healthy
     networks:
       - label_network

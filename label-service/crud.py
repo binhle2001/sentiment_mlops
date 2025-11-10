@@ -312,6 +312,43 @@ class LabelCRUD:
                 })
         
         return results
+    
+    @staticmethod
+    def update_embedding(conn, label_id: UUID, embedding_vector: list) -> bool:
+        """Update embedding vector for a label."""
+        query = """
+            UPDATE labels
+            SET embedding = %s
+            WHERE id = %s
+        """
+        
+        from database import execute_query
+        execute_query(conn, query, (embedding_vector, str(label_id)), fetch="none")
+        
+        logger.info(f"Updated embedding for label id={label_id}")
+        return True
+    
+    @staticmethod
+    def get_all_with_embeddings(conn) -> Dict[int, List[Dict[str, Any]]]:
+        """Get all labels with embeddings, grouped by level."""
+        query = """
+            SELECT id, name, level, parent_id, description, embedding, created_at, updated_at
+            FROM labels
+            WHERE embedding IS NOT NULL
+            ORDER BY level, name
+        """
+        
+        from database import execute_query
+        results = execute_query(conn, query, fetch="all")
+        labels = rows_to_list(results)
+        
+        # Group by level
+        grouped = {1: [], 2: [], 3: []}
+        for label in labels:
+            if label['level'] in grouped:
+                grouped[label['level']].append(label)
+        
+        return grouped
 
 
 class FeedbackSentimentCRUD:
@@ -421,3 +458,220 @@ class FeedbackSentimentCRUD:
         from database import execute_query
         result = execute_query(conn, query, tuple(params) if params else None, fetch="one")
         return result['count'] if result else 0
+
+
+class FeedbackIntentCRUD:
+    """CRUD operations for Feedback Intent Analysis with raw SQL."""
+    
+    @staticmethod
+    def cosine_similarity(vec1: list, vec2: list) -> float:
+        """Calculate cosine similarity between two vectors."""
+        import math
+        
+        if len(vec1) != len(vec2):
+            raise ValueError("Vectors must have the same length")
+        
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        magnitude1 = math.sqrt(sum(a * a for a in vec1))
+        magnitude2 = math.sqrt(sum(b * b for b in vec2))
+        
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+        
+        return dot_product / (magnitude1 * magnitude2)
+    
+    @staticmethod
+    def get_top_intents(
+        conn,
+        feedback_embedding: list,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Calculate top intent triplets based on cosine similarity.
+        Returns triplets where level2 is child of level1, and level3 is child of level2.
+        """
+        # Get all labels with embeddings grouped by level
+        labels_by_level = LabelCRUD.get_all_with_embeddings(conn)
+        
+        level1_labels = labels_by_level.get(1, [])
+        level2_labels = labels_by_level.get(2, [])
+        level3_labels = labels_by_level.get(3, [])
+        
+        if not level1_labels or not level2_labels or not level3_labels:
+            logger.warning("Not enough labels with embeddings for all levels")
+            return []
+        
+        # Build parent-child relationships
+        level2_by_parent = {}
+        for l2 in level2_labels:
+            parent_id = str(l2['parent_id']) if l2['parent_id'] else None
+            if parent_id:
+                if parent_id not in level2_by_parent:
+                    level2_by_parent[parent_id] = []
+                level2_by_parent[parent_id].append(l2)
+        
+        level3_by_parent = {}
+        for l3 in level3_labels:
+            parent_id = str(l3['parent_id']) if l3['parent_id'] else None
+            if parent_id:
+                if parent_id not in level3_by_parent:
+                    level3_by_parent[parent_id] = []
+                level3_by_parent[parent_id].append(l3)
+        
+        # Calculate similarities for all valid triplets
+        triplets = []
+        
+        for l1 in level1_labels:
+            l1_id = str(l1['id'])
+            l1_embedding = l1['embedding']
+            if not l1_embedding:
+                continue
+            
+            sim1 = FeedbackIntentCRUD.cosine_similarity(feedback_embedding, l1_embedding)
+            
+            # Get level2 children of this level1
+            l2_children = level2_by_parent.get(l1_id, [])
+            
+            for l2 in l2_children:
+                l2_id = str(l2['id'])
+                l2_embedding = l2['embedding']
+                if not l2_embedding:
+                    continue
+                
+                sim2 = FeedbackIntentCRUD.cosine_similarity(feedback_embedding, l2_embedding)
+                
+                # Get level3 children of this level2
+                l3_children = level3_by_parent.get(l2_id, [])
+                
+                for l3 in l3_children:
+                    l3_embedding = l3['embedding']
+                    if not l3_embedding:
+                        continue
+                    
+                    sim3 = FeedbackIntentCRUD.cosine_similarity(feedback_embedding, l3_embedding)
+                    
+                    # Calculate average similarity
+                    avg_similarity = (sim1 + sim2 + sim3) / 3.0
+                    
+                    triplets.append({
+                        'level1': l1,
+                        'level2': l2,
+                        'level3': l3,
+                        'avg_cosine_similarity': avg_similarity
+                    })
+        
+        # Sort by average similarity (descending) and return top N
+        triplets.sort(key=lambda x: x['avg_cosine_similarity'], reverse=True)
+        
+        return triplets[:limit]
+    
+    @staticmethod
+    def save_intents(
+        conn,
+        feedback_id: UUID,
+        intents: List[Dict[str, Any]]
+    ) -> int:
+        """Save intent analysis results to database."""
+        # First, delete existing intents for this feedback
+        delete_query = "DELETE FROM feedback_intents WHERE feedback_id = %s"
+        
+        from database import execute_query
+        execute_query(conn, delete_query, (str(feedback_id),), fetch="none")
+        
+        # Insert new intents
+        insert_query = """
+            INSERT INTO feedback_intents (feedback_id, level1_id, level2_id, level3_id, avg_cosine_similarity)
+            VALUES (%s, %s, %s, %s, %s)
+        """
+        
+        count = 0
+        for intent in intents:
+            execute_query(
+                conn,
+                insert_query,
+                (
+                    str(feedback_id),
+                    str(intent['level1']['id']),
+                    str(intent['level2']['id']),
+                    str(intent['level3']['id']),
+                    intent['avg_cosine_similarity']
+                ),
+                fetch="none"
+            )
+            count += 1
+        
+        logger.info(f"Saved {count} intents for feedback id={feedback_id}")
+        return count
+    
+    @staticmethod
+    def get_cached_intents(
+        conn,
+        feedback_id: UUID,
+        limit: int = 10
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Get cached intent analysis results from database."""
+        query = """
+            SELECT 
+                fi.id,
+                fi.feedback_id,
+                fi.avg_cosine_similarity,
+                fi.created_at,
+                l1.id as l1_id, l1.name as l1_name, l1.level as l1_level, 
+                l1.parent_id as l1_parent_id, l1.description as l1_description,
+                l1.created_at as l1_created_at, l1.updated_at as l1_updated_at,
+                l2.id as l2_id, l2.name as l2_name, l2.level as l2_level,
+                l2.parent_id as l2_parent_id, l2.description as l2_description,
+                l2.created_at as l2_created_at, l2.updated_at as l2_updated_at,
+                l3.id as l3_id, l3.name as l3_name, l3.level as l3_level,
+                l3.parent_id as l3_parent_id, l3.description as l3_description,
+                l3.created_at as l3_created_at, l3.updated_at as l3_updated_at
+            FROM feedback_intents fi
+            JOIN labels l1 ON fi.level1_id = l1.id
+            JOIN labels l2 ON fi.level2_id = l2.id
+            JOIN labels l3 ON fi.level3_id = l3.id
+            WHERE fi.feedback_id = %s
+            ORDER BY fi.avg_cosine_similarity DESC
+            LIMIT %s
+        """
+        
+        from database import execute_query
+        results = execute_query(conn, query, (str(feedback_id), limit), fetch="all")
+        
+        if not results:
+            return None
+        
+        intents = []
+        for row in results:
+            row_dict = dict(row)
+            intents.append({
+                'level1': {
+                    'id': row_dict['l1_id'],
+                    'name': row_dict['l1_name'],
+                    'level': row_dict['l1_level'],
+                    'parent_id': row_dict['l1_parent_id'],
+                    'description': row_dict['l1_description'],
+                    'created_at': row_dict['l1_created_at'],
+                    'updated_at': row_dict['l1_updated_at']
+                },
+                'level2': {
+                    'id': row_dict['l2_id'],
+                    'name': row_dict['l2_name'],
+                    'level': row_dict['l2_level'],
+                    'parent_id': row_dict['l2_parent_id'],
+                    'description': row_dict['l2_description'],
+                    'created_at': row_dict['l2_created_at'],
+                    'updated_at': row_dict['l2_updated_at']
+                },
+                'level3': {
+                    'id': row_dict['l3_id'],
+                    'name': row_dict['l3_name'],
+                    'level': row_dict['l3_level'],
+                    'parent_id': row_dict['l3_parent_id'],
+                    'description': row_dict['l3_description'],
+                    'created_at': row_dict['l3_created_at'],
+                    'updated_at': row_dict['l3_updated_at']
+                },
+                'avg_cosine_similarity': row_dict['avg_cosine_similarity']
+            })
+        
+        return intents

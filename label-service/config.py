@@ -44,6 +44,12 @@ class Settings(BaseSettings):
         description="URL of the sentiment analysis service"
     )
     
+    # Embedding Service settings
+    embedding_service_url: str = Field(
+        default="http://embedding-service:8000/api/v1",
+        description="URL of the embedding service"
+    )
+    
     @property
     def database_url(self) -> str:
         """Construct PostgreSQL database URL."""

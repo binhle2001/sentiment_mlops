@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from database import get_db
-from crud import LabelCRUD, FeedbackSentimentCRUD
+from crud import LabelCRUD, FeedbackSentimentCRUD, FeedbackIntentCRUD
 from schemas import (
     LabelCreate,
     LabelUpdate,
@@ -23,6 +23,8 @@ from schemas import (
     FeedbackSentimentListResponse,
     FeedbackSource,
     SentimentLabel,
+    IntentTriplet,
+    FeedbackIntentResponse,
 )
 from config import get_settings
 
@@ -298,6 +300,31 @@ async def call_sentiment_service(text: str) -> dict:
         )
 
 
+async def call_embedding_service(text: str) -> list:
+    """Call the embedding service to get text embedding."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{settings.embedding_service_url}/encode",
+                json={"text": text}
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result.get("embedding", [])
+    except httpx.HTTPError as e:
+        logger.error(f"Error calling embedding service: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding service is unavailable"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error calling embedding service: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get embedding"
+        )
+
+
 @router.post(
     "/feedbacks",
     response_model=FeedbackSentimentResponse,
@@ -408,4 +435,292 @@ def get_feedback_sentiment(feedback_id: UUID):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve feedback"
+        )
+
+
+# --- Intent Analysis Routes ---
+
+@router.post(
+    "/feedbacks/{feedback_id}/intents",
+    response_model=FeedbackIntentResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Analyze feedback intents"
+)
+async def analyze_feedback_intents(feedback_id: UUID):
+    """
+    Analyze feedback and return top 10 intent triplets based on cosine similarity.
+    This endpoint calculates or retrieves cached intent analysis results.
+    """
+    try:
+        with get_db() as conn:
+            # Check if feedback exists
+            feedback = FeedbackSentimentCRUD.get_by_id(conn, feedback_id)
+            if not feedback:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Feedback with id {feedback_id} not found"
+                )
+            
+            # Try to get cached intents first
+            cached_intents = FeedbackIntentCRUD.get_cached_intents(conn, feedback_id, limit=10)
+            
+            if cached_intents:
+                logger.info(f"Returning cached intents for feedback {feedback_id}")
+                return FeedbackIntentResponse(
+                    feedback_id=feedback_id,
+                    intents=[IntentTriplet(**intent) for intent in cached_intents],
+                    total_intents=len(cached_intents)
+                )
+            
+            # Calculate new intents
+            logger.info(f"Calculating new intents for feedback {feedback_id}")
+            
+            # Get embedding for feedback text
+            feedback_embedding = await call_embedding_service(feedback['feedback_text'])
+            
+            if not feedback_embedding:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to get feedback embedding"
+                )
+            
+            # Calculate top intents
+            intents = FeedbackIntentCRUD.get_top_intents(conn, feedback_embedding, limit=10)
+            
+            if not intents:
+                logger.warning(f"No intents found for feedback {feedback_id}")
+                return FeedbackIntentResponse(
+                    feedback_id=feedback_id,
+                    intents=[],
+                    total_intents=0
+                )
+            
+            # Save intents to cache
+            FeedbackIntentCRUD.save_intents(conn, feedback_id, intents)
+            
+            return FeedbackIntentResponse(
+                feedback_id=feedback_id,
+                intents=[IntentTriplet(**intent) for intent in intents],
+                total_intents=len(intents)
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error analyzing intents for feedback {feedback_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to analyze feedback intents"
+        )
+
+
+@router.get(
+    "/feedbacks/{feedback_id}/intents",
+    response_model=FeedbackIntentResponse,
+    summary="Get cached feedback intents"
+)
+def get_feedback_intents(feedback_id: UUID):
+    """Get cached intent analysis results for a feedback."""
+    try:
+        with get_db() as conn:
+            # Check if feedback exists
+            feedback = FeedbackSentimentCRUD.get_by_id(conn, feedback_id)
+            if not feedback:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Feedback with id {feedback_id} not found"
+                )
+            
+            # Get cached intents
+            cached_intents = FeedbackIntentCRUD.get_cached_intents(conn, feedback_id, limit=10)
+            
+            if not cached_intents:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No intent analysis found for feedback {feedback_id}. Please use POST endpoint to analyze."
+                )
+            
+            return FeedbackIntentResponse(
+                feedback_id=feedback_id,
+                intents=[IntentTriplet(**intent) for intent in cached_intents],
+                total_intents=len(cached_intents)
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting intents for feedback {feedback_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve feedback intents"
+        )
+
+
+# --- Admin/Seed Data Routes ---
+
+@router.post(
+    "/admin/seed-label-embeddings",
+    summary="Seed embeddings for all labels (Admin)"
+)
+async def seed_label_embeddings():
+    """
+    Admin endpoint to compute and update embeddings for all labels.
+    This should be called after adding new labels or when initializing the system.
+    """
+    try:
+        with get_db() as conn:
+            # Get all labels
+            all_labels = LabelCRUD.get_all(conn, skip=0, limit=1000)
+            
+            if not all_labels:
+                return {
+                    "status": "success",
+                    "message": "No labels found to process",
+                    "total": 0,
+                    "processed": 0,
+                    "failed": 0
+                }
+            
+            logger.info(f"Starting to seed embeddings for {len(all_labels)} labels")
+            
+            processed = 0
+            failed = 0
+            
+            for label in all_labels:
+                try:
+                    # Create text for embedding
+                    text = label['name']
+                    if label.get('description'):
+                        text = f"{label['name']}. {label['description']}"
+                    
+                    # Get embedding
+                    embedding = await call_embedding_service(text)
+                    
+                    if not embedding:
+                        logger.warning(f"Failed to get embedding for label: {label['name']} (id={label['id']})")
+                        failed += 1
+                        continue
+                    
+                    # Update label with embedding
+                    LabelCRUD.update_embedding(conn, label['id'], embedding)
+                    processed += 1
+                    logger.debug(f"Updated embedding for label: {label['name']} (id={label['id']})")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing label {label['id']}: {e}")
+                    failed += 1
+            
+            return {
+                "status": "success",
+                "message": f"Completed seeding embeddings",
+                "total": len(all_labels),
+                "processed": processed,
+                "failed": failed
+            }
+    
+    except Exception as e:
+        logger.error(f"Error in seed_label_embeddings: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to seed label embeddings: {str(e)}"
+        )
+
+
+@router.post(
+    "/admin/seed-feedback-intents",
+    summary="Seed intents for all feedbacks (Admin)"
+)
+async def seed_feedback_intents(recompute: bool = False):
+    """
+    Admin endpoint to compute and cache intents for all feedbacks.
+    
+    Args:
+        recompute: If True, recompute intents for all feedbacks including those with cached results.
+                  If False, only compute for feedbacks without cached results.
+    """
+    try:
+        with get_db() as conn:
+            # Get feedbacks to process
+            if recompute:
+                # Get all feedbacks
+                from database import execute_query
+                results = execute_query(
+                    conn,
+                    "SELECT id, feedback_text FROM feedback_sentiments ORDER BY created_at DESC",
+                    fetch="all"
+                )
+                feedbacks = [dict(row) for row in results] if results else []
+            else:
+                # Get only feedbacks without intents
+                from database import execute_query
+                results = execute_query(
+                    conn,
+                    """
+                    SELECT DISTINCT fs.id, fs.feedback_text
+                    FROM feedback_sentiments fs
+                    LEFT JOIN feedback_intents fi ON fs.id = fi.feedback_id
+                    WHERE fi.id IS NULL
+                    ORDER BY fs.created_at DESC
+                    """,
+                    fetch="all"
+                )
+                feedbacks = [dict(row) for row in results] if results else []
+            
+            if not feedbacks:
+                return {
+                    "status": "success",
+                    "message": "No feedbacks found to process",
+                    "total": 0,
+                    "processed": 0,
+                    "failed": 0
+                }
+            
+            logger.info(f"Starting to seed intents for {len(feedbacks)} feedbacks")
+            
+            processed = 0
+            failed = 0
+            
+            for feedback in feedbacks:
+                try:
+                    feedback_id = feedback['id']
+                    feedback_text = feedback['feedback_text']
+                    
+                    # Get embedding for feedback
+                    feedback_embedding = await call_embedding_service(feedback_text)
+                    
+                    if not feedback_embedding:
+                        logger.warning(f"Failed to get embedding for feedback {feedback_id}")
+                        failed += 1
+                        continue
+                    
+                    # Calculate top intents
+                    intents = FeedbackIntentCRUD.get_top_intents(conn, feedback_embedding, limit=10)
+                    
+                    if intents:
+                        # Save intents to cache
+                        FeedbackIntentCRUD.save_intents(conn, feedback_id, intents)
+                        processed += 1
+                        logger.debug(f"Computed intents for feedback {feedback_id}")
+                    else:
+                        logger.warning(f"No intents found for feedback {feedback_id}")
+                        failed += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error processing feedback {feedback.get('id')}: {e}")
+                    failed += 1
+            
+            return {
+                "status": "success",
+                "message": f"Completed seeding intents",
+                "total": len(feedbacks),
+                "processed": processed,
+                "failed": failed,
+                "recompute": recompute
+            }
+    
+    except Exception as e:
+        logger.error(f"Error in seed_feedback_intents: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to seed feedback intents: {str(e)}"
         )

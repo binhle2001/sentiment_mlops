@@ -157,4 +157,27 @@ class FeedbackSentimentListResponse(BaseModel):
     feedback_source: Optional[FeedbackSource] = None
 
 
+# --- Intent Analysis Schemas ---
+
+class IntentTriplet(BaseModel):
+    """Schema for an intent triplet (level 1, 2, 3 labels)."""
+    level1: LabelResponse
+    level2: LabelResponse
+    level3: LabelResponse
+    avg_cosine_similarity: float = Field(..., description="Average cosine similarity score")
+    
+    class Config:
+        from_attributes = True
+
+
+class FeedbackIntentResponse(BaseModel):
+    """Schema for feedback intent analysis response."""
+    feedback_id: UUID
+    intents: List[IntentTriplet] = Field(..., description="Top 10 intent triplets")
+    total_intents: int = Field(..., description="Total number of intents analyzed")
+    
+    class Config:
+        from_attributes = True
+
+
 

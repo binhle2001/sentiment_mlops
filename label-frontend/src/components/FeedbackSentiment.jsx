@@ -38,6 +38,8 @@ const FeedbackSentiment = () => {
   const [pageSize, setPageSize] = useState(10);
   const [filters, setFilters] = useState({});
   const [latestResult, setLatestResult] = useState(null);
+  const [topIntents, setTopIntents] = useState([]);
+  const [loadingIntents, setLoadingIntents] = useState(false);
 
   // Fetch feedbacks on mount and when pagination/filters change
   useEffect(() => {
@@ -75,6 +77,9 @@ const FeedbackSentiment = () => {
       message.success('Phân tích sentiment thành công!');
       form.resetFields();
       
+      // Get intent analysis for the feedback
+      fetchIntentsForFeedback(response.id);
+      
       // Refresh the list
       setCurrentPage(1);
       fetchFeedbacks();
@@ -83,6 +88,23 @@ const FeedbackSentiment = () => {
       console.error('Error submitting feedback:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchIntentsForFeedback = async (feedbackId) => {
+    try {
+      setLoadingIntents(true);
+      const response = await feedbackAPI.getIntentsForFeedback(feedbackId);
+      setTopIntents(response.intents || []);
+      if (response.intents && response.intents.length > 0) {
+        message.success(`Phân tích intent thành công! Tìm thấy ${response.intents.length} intent phù hợp.`);
+      }
+    } catch (error) {
+      message.warning('Không thể phân tích intent. Có thể chưa có đủ dữ liệu label.');
+      console.error('Error fetching intents:', error);
+      setTopIntents([]);
+    } finally {
+      setLoadingIntents(false);
     }
   };
 
@@ -320,6 +342,64 @@ const FeedbackSentiment = () => {
                 </Card>
               </Col>
             </Row>
+
+            {/* Intent Analysis Results */}
+            <Divider>Top 10 Intent Triplets (Độ tương đồng cao nhất)</Divider>
+            {loadingIntents ? (
+              <div style={{ textAlign: 'center', padding: '20px' }}>
+                <Space direction="vertical">
+                  <ReloadOutlined spin style={{ fontSize: '24px' }} />
+                  <Text>Đang phân tích intent...</Text>
+                </Space>
+              </div>
+            ) : topIntents.length > 0 ? (
+              <Table
+                dataSource={topIntents}
+                pagination={false}
+                size="small"
+                rowKey={(record, index) => `${record.level1.id}-${record.level2.id}-${record.level3.id}-${index}`}
+                columns={[
+                  {
+                    title: '#',
+                    key: 'index',
+                    width: '5%',
+                    render: (text, record, index) => index + 1,
+                  },
+                  {
+                    title: 'Intent Path',
+                    key: 'intent_path',
+                    width: '75%',
+                    render: (text, record) => (
+                      <Text>
+                        <Tag color="blue">{record.level1.name}</Tag>
+                        <span style={{ margin: '0 8px' }}>→</span>
+                        <Tag color="cyan">{record.level2.name}</Tag>
+                        <span style={{ margin: '0 8px' }}>→</span>
+                        <Tag color="geekblue">{record.level3.name}</Tag>
+                      </Text>
+                    ),
+                  },
+                  {
+                    title: 'Độ tương đồng',
+                    key: 'similarity',
+                    width: '20%',
+                    align: 'center',
+                    render: (text, record) => (
+                      <Tag color={record.avg_cosine_similarity >= 0.7 ? 'green' : record.avg_cosine_similarity >= 0.5 ? 'orange' : 'default'}>
+                        {(record.avg_cosine_similarity * 100).toFixed(2)}%
+                      </Tag>
+                    ),
+                    sorter: (a, b) => a.avg_cosine_similarity - b.avg_cosine_similarity,
+                  },
+                ]}
+              />
+            ) : (
+              <div style={{ textAlign: 'center', padding: '20px' }}>
+                <Text type="secondary">
+                  Không có intent nào được tìm thấy. Vui lòng đảm bảo labels đã có embedding.
+                </Text>
+              </div>
+            )}
           </>
         )}
       </Card>
