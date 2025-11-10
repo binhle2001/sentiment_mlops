@@ -115,11 +115,14 @@ def execute_query(conn, query: str, params: tuple = None, fetch: str = "all"):
 
 
 def init_db():
-    """Check database connection and verify tables exist."""
+    """Check database connection and ensure UUID extension and default are enabled."""
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                # Just check if labels table exists
+                # Enable UUID extension if not exists
+                cur.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";')
+                
+                # Check if labels table exists
                 cur.execute("""
                     SELECT EXISTS (
                         SELECT FROM information_schema.tables 
@@ -127,10 +130,30 @@ def init_db():
                     );
                 """)
                 exists = cur.fetchone()[0]
+                
                 if exists:
-                    logger.info("Database connection OK - labels table exists")
+                    # Check if id column has default
+                    cur.execute("""
+                        SELECT column_default 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'labels' AND column_name = 'id';
+                    """)
+                    default = cur.fetchone()[0]
+                    
+                    if default is None or 'uuid_generate_v4' not in str(default):
+                        # Add default to id column
+                        logger.info("Adding UUID default to id column...")
+                        cur.execute("""
+                            ALTER TABLE labels 
+                            ALTER COLUMN id SET DEFAULT uuid_generate_v4();
+                        """)
+                        logger.info("UUID default added successfully")
+                    
+                    logger.info("Database connection OK - labels table configured correctly")
                 else:
                     logger.warning("Labels table does not exist - should be created by docker-entrypoint-initdb.d")
+            
+            conn.commit()
     except Exception as e:
         logger.error(f"Error checking database: {e}", exc_info=True)
         raise
