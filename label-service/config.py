@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     
     # Sentiment Service settings
     sentiment_service_url: str = Field(
-        default="http://localhost:8000/api/v1",
+        default="http://sentiment-service:8005/api/v1",
         description="URL of the sentiment analysis service"
     )
     
