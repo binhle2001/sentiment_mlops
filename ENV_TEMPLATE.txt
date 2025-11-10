@@ -1,0 +1,33 @@
+# ========================================
+# TEMPLATE FILE FOR .env
+# Copy nội dung này vào file .env của bạn
+# ========================================
+
+# PostgreSQL Database Configuration
+POSTGRES_USER=labeluser
+POSTGRES_PASSWORD=labelpass123
+POSTGRES_DB=label_db
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+
+# Sentiment Service Configuration
+SENTIMENT_EXTERNAL_PORT=8002
+SENTIMENT_PORT=8005
+
+# Embedding Service Configuration (MỚI - CẦN THÊM)
+# Port 8003 vì 8002 đã dùng cho sentiment
+EMBEDDING_EXTERNAL_PORT=8003
+
+# Label Backend Service Configuration
+LABEL_BACKEND_PORT=8001
+
+# Label Frontend Configuration
+LABEL_FRONTEND_PORT=3345
+
+# API URL for Frontend
+VITE_API_URL=http://localhost:8001/api/v1
+
+# Service URLs (for internal communication)
+SENTIMENT_SERVICE_URL=http://sentiment-service:8005/api/v1
+EMBEDDING_SERVICE_URL=http://embedding-service:8000/api/v1
+

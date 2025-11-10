@@ -19,6 +19,8 @@ from datetime import datetime
 # Cấu hình
 API_BASE_URL = "http://localhost:8001/api/v1"
 
+# Lưu ý: Nếu bạn đổi LABEL_BACKEND_PORT trong .env, cần update lại URL này
+
 
 def print_banner():
     """In banner."""

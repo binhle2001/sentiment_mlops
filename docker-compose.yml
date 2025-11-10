@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
@@ -57,16 +55,16 @@ services:
     container_name: embedding_service
     restart: unless-stopped
     ports:
-      - "${EMBEDDING_EXTERNAL_PORT}:${EMBEDDING_PORT}"
+      - "${EMBEDDING_EXTERNAL_PORT:-8003}:8000"
     volumes:
       - ./bge-m3-finetuned-transformer:/models/embedding
     environment:
       EMBEDDING_MODEL_PATH: /models/embedding/vn_embedding_bgem3
-      EMBEDDING_PORT: ${EMBEDDING_PORT}
+      EMBEDDING_PORT: 8000
     networks:
       - label_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${EMBEDDING_PORT}/api/v1/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -92,7 +90,7 @@ services:
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: 5432
       SENTIMENT_SERVICE_URL: http://sentiment-service:${SENTIMENT_PORT}/api/v1
-      EMBEDDING_SERVICE_URL: http://embedding-service:${EMBEDDING_PORT}/api/v1
+      EMBEDDING_SERVICE_URL: http://embedding-service:8000/api/v1
     depends_on:
       postgres:
         condition: service_healthy
