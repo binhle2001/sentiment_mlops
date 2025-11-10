@@ -5,6 +5,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -30,7 +31,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     """Health check endpoint."""
     try:
         # Test database connection
-        await db.execute("SELECT 1")
+        await db.execute(text("SELECT 1"))
         db_status = "connected"
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
