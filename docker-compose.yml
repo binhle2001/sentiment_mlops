@@ -34,6 +34,8 @@ services:
     restart: unless-stopped
     ports:
       - "${LABEL_BACKEND_PORT}:8001"
+    volumes:
+      - ./label-service:/app
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
