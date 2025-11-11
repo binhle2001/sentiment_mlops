@@ -461,8 +461,8 @@ async def analyze_feedback_intents(feedback_id: UUID):
                     detail=f"Feedback with id {feedback_id} not found"
                 )
             
-            # Try to get cached intents first
-            cached_intents = FeedbackIntentCRUD.get_cached_intents(conn, feedback_id, limit=10)
+            # Try to get cached intents first (top 50)
+            cached_intents = FeedbackIntentCRUD.get_cached_intents(conn, feedback_id, limit=50)
             
             if cached_intents:
                 logger.info(f"Returning cached intents for feedback {feedback_id}")
@@ -484,8 +484,16 @@ async def analyze_feedback_intents(feedback_id: UUID):
                     detail="Failed to get feedback embedding"
                 )
             
-            # Calculate top intents
-            intents = FeedbackIntentCRUD.get_top_intents(conn, feedback_embedding, limit=10)
+            # Calculate top intents using hierarchical approach
+            # Top 5 level1 → top 20 level2 → top 50 triplets
+            intents = FeedbackIntentCRUD.get_top_intents(
+                conn, 
+                feedback_embedding, 
+                limit=50,
+                top_level1=5,
+                top_level2_per_level1=4,
+                top_level3_per_level2=3
+            )
             
             if not intents:
                 logger.warning(f"No intents found for feedback {feedback_id}")
@@ -531,8 +539,8 @@ def get_feedback_intents(feedback_id: UUID):
                     detail=f"Feedback with id {feedback_id} not found"
                 )
             
-            # Get cached intents
-            cached_intents = FeedbackIntentCRUD.get_cached_intents(conn, feedback_id, limit=10)
+            # Get cached intents (top 50)
+            cached_intents = FeedbackIntentCRUD.get_cached_intents(conn, feedback_id, limit=50)
             
             if not cached_intents:
                 raise HTTPException(
@@ -693,8 +701,16 @@ async def seed_feedback_intents(recompute: bool = False):
                         failed += 1
                         continue
                     
-                    # Calculate top intents
-                    intents = FeedbackIntentCRUD.get_top_intents(conn, feedback_embedding, limit=10)
+                    # Calculate top intents using hierarchical approach
+                    # Top 5 level1 → top 20 level2 → top 50 triplets
+                    intents = FeedbackIntentCRUD.get_top_intents(
+                        conn, 
+                        feedback_embedding, 
+                        limit=50,
+                        top_level1=5,
+                        top_level2_per_level1=4,
+                        top_level3_per_level2=3
+                    )
                     
                     if intents:
                         # Save intents to cache

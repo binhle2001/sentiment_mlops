@@ -251,3 +251,4 @@ docker-compose logs -f embedding-service
 docker-compose logs -f
 ```
 
+

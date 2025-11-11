@@ -484,11 +484,28 @@ class FeedbackIntentCRUD:
     def get_top_intents(
         conn,
         feedback_embedding: list,
-        limit: int = 10
+        limit: int = 50,
+        top_level1: int = 5,
+        top_level2_per_level1: int = 4,
+        top_level3_per_level2: int = 3
     ) -> List[Dict[str, Any]]:
         """
-        Calculate top intent triplets based on cosine similarity.
-        Returns triplets where level2 is child of level1, and level3 is child of level2.
+        Calculate top intent triplets using hierarchical top-down approach.
+        
+        Algorithm:
+        1. Find top 5 level1 labels with highest cosine similarity
+        2. For each top level1, find top 4 level2 children → ~20 level2
+        3. For each top level2, find top 2-3 level3 children → ~50 triplets
+        
+        Args:
+            feedback_embedding: Embedding vector of feedback text
+            limit: Maximum number of triplets to return (default: 50)
+            top_level1: Number of top level1 to consider (default: 5)
+            top_level2_per_level1: Number of top level2 per level1 (default: 4)
+            top_level3_per_level2: Number of top level3 per level2 (default: 3)
+        
+        Returns:
+            List of triplets with level1, level2, level3 and avg_cosine_similarity
         """
         # Get all labels with embeddings grouped by level
         labels_by_level = LabelCRUD.get_all_with_embeddings(conn)
@@ -518,49 +535,95 @@ class FeedbackIntentCRUD:
                     level3_by_parent[parent_id] = []
                 level3_by_parent[parent_id].append(l3)
         
-        # Calculate similarities for all valid triplets
-        triplets = []
-        
+        # Step 1: Calculate similarity for all level1 and get top N
+        level1_with_sim = []
         for l1 in level1_labels:
+            if not l1['embedding']:
+                continue
+            sim1 = FeedbackIntentCRUD.cosine_similarity(feedback_embedding, l1['embedding'])
+            level1_with_sim.append({
+                'label': l1,
+                'similarity': sim1
+            })
+        
+        # Sort and get top level1
+        level1_with_sim.sort(key=lambda x: x['similarity'], reverse=True)
+        top_level1_items = level1_with_sim[:top_level1]
+        
+        logger.debug(f"Selected top {len(top_level1_items)} level1 labels")
+        
+        # Step 2: For each top level1, get top level2 children
+        level2_with_sim = []
+        for l1_item in top_level1_items:
+            l1 = l1_item['label']
             l1_id = str(l1['id'])
-            l1_embedding = l1['embedding']
-            if not l1_embedding:
+            sim1 = l1_item['similarity']
+            
+            # Get level2 children
+            l2_children = level2_by_parent.get(l1_id, [])
+            if not l2_children:
                 continue
             
-            sim1 = FeedbackIntentCRUD.cosine_similarity(feedback_embedding, l1_embedding)
-            
-            # Get level2 children of this level1
-            l2_children = level2_by_parent.get(l1_id, [])
-            
+            # Calculate similarity for each level2 child
+            l2_candidates = []
             for l2 in l2_children:
-                l2_id = str(l2['id'])
-                l2_embedding = l2['embedding']
-                if not l2_embedding:
+                if not l2['embedding']:
                     continue
-                
-                sim2 = FeedbackIntentCRUD.cosine_similarity(feedback_embedding, l2_embedding)
-                
-                # Get level3 children of this level2
-                l3_children = level3_by_parent.get(l2_id, [])
-                
-                for l3 in l3_children:
-                    l3_embedding = l3['embedding']
-                    if not l3_embedding:
-                        continue
-                    
-                    sim3 = FeedbackIntentCRUD.cosine_similarity(feedback_embedding, l3_embedding)
-                    
-                    # Calculate average similarity
-                    avg_similarity = (sim1 + sim2 + sim3) / 3.0
-                    
-                    triplets.append({
-                        'level1': l1,
-                        'level2': l2,
-                        'level3': l3,
-                        'avg_cosine_similarity': avg_similarity
-                    })
+                sim2 = FeedbackIntentCRUD.cosine_similarity(feedback_embedding, l2['embedding'])
+                l2_candidates.append({
+                    'level1': l1,
+                    'level1_sim': sim1,
+                    'level2': l2,
+                    'level2_sim': sim2
+                })
+            
+            # Sort by level2 similarity and take top N
+            l2_candidates.sort(key=lambda x: x['level2_sim'], reverse=True)
+            level2_with_sim.extend(l2_candidates[:top_level2_per_level1])
         
-        # Sort by average similarity (descending) and return top N
+        logger.debug(f"Selected {len(level2_with_sim)} level2 labels")
+        
+        # Step 3: For each selected level2, get top level3 children
+        triplets = []
+        for l2_item in level2_with_sim:
+            l1 = l2_item['level1']
+            l2 = l2_item['level2']
+            sim1 = l2_item['level1_sim']
+            sim2 = l2_item['level2_sim']
+            l2_id = str(l2['id'])
+            
+            # Get level3 children
+            l3_children = level3_by_parent.get(l2_id, [])
+            if not l3_children:
+                continue
+            
+            # Calculate similarity for each level3 child
+            l3_candidates = []
+            for l3 in l3_children:
+                if not l3['embedding']:
+                    continue
+                sim3 = FeedbackIntentCRUD.cosine_similarity(feedback_embedding, l3['embedding'])
+                
+                # Calculate average similarity across all 3 levels
+                avg_similarity = (sim1 + sim2 + sim3) / 3.0
+                
+                l3_candidates.append({
+                    'level1': l1,
+                    'level2': l2,
+                    'level3': l3,
+                    'avg_cosine_similarity': avg_similarity,
+                    'level1_sim': sim1,
+                    'level2_sim': sim2,
+                    'level3_sim': sim3
+                })
+            
+            # Sort by level3 similarity and take top N
+            l3_candidates.sort(key=lambda x: x['level3_sim'], reverse=True)
+            triplets.extend(l3_candidates[:top_level3_per_level2])
+        
+        logger.debug(f"Generated {len(triplets)} triplets")
+        
+        # Sort all triplets by average similarity and return top N
         triplets.sort(key=lambda x: x['avg_cosine_similarity'], reverse=True)
         
         return triplets[:limit]

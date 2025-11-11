@@ -7,8 +7,11 @@ Tính năng Intent Analysis cho phép phân tích ý định (intent) của feed
 Khi người dùng submit một feedback, hệ thống sẽ:
 1. Phân tích sentiment (tích cực/tiêu cực/trung tính)
 2. Tính toán embedding cho feedback text
-3. So sánh với embedding của tất cả label triplets (level 1, 2, 3)
-4. Trả về top 10 intent triplets có độ tương đồng cao nhất
+3. Sử dụng thuật toán hierarchical top-down:
+   - Tìm top 5 level1 có similarity cao nhất
+   - Với mỗi level1, tìm top 4 level2 con → ~20 level2
+   - Với mỗi level2, tìm top 2-3 level3 con → ~50 triplets
+4. Trả về top 50 intent triplets có độ tương đồng cao nhất
 
 ## Cài Đặt & Triển Khai
 
@@ -119,7 +122,7 @@ Kết quả sẽ hiển thị:
 - **Sentiment**: Tích cực/Tiêu cực/Trung tính
 - **Độ tin cậy**: Confidence score
 - **Nguồn**: Nguồn feedback
-- **Top 10 Intent Triplets**: Danh sách các intent path với độ tương đồng cao nhất
+- **Top 50 Intent Triplets**: Danh sách các intent path với độ tương đồng cao nhất (theo thuật toán hierarchical)
 
 ### 2. Hiểu Kết Quả Intent Analysis
 
@@ -189,17 +192,40 @@ Trả về kết quả intent đã được cache trước đó.
 
 ## Thuật Toán Tính Intent
 
-### Công Thức Tính Độ Tương Đồng
+### Hierarchical Top-Down Approach
 
+Thay vì tính toán tất cả các triplets có thể (rất tốn thời gian), hệ thống sử dụng thuật toán **hierarchical top-down**:
+
+**Bước 1: Tìm Top 5 Level1**
 1. Tính embedding cho feedback text: `E_feedback`
-2. Với mỗi triplet hợp lệ (level2 là con của level1, level3 là con của level2):
-   - Tính cosine similarity: 
-     - `sim1 = cosine(E_feedback, E_level1)`
-     - `sim2 = cosine(E_feedback, E_level2)`
-     - `sim3 = cosine(E_feedback, E_level3)`
-   - Tính average: `avg_sim = (sim1 + sim2 + sim3) / 3`
-3. Sắp xếp theo `avg_sim` giảm dần
-4. Lấy top 10
+2. Tính cosine similarity với TẤT CẢ level1 labels
+3. Sắp xếp giảm dần và lấy **top 5 level1**
+
+**Bước 2: Tìm Top ~20 Level2**
+4. Với mỗi level1 trong top 5:
+   - Lấy các level2 con (children) của level1 đó
+   - Tính cosine similarity với E_feedback
+   - Lấy **top 4 level2** cho mỗi level1
+5. Kết quả: ~20 level2 (5 × 4 = 20)
+
+**Bước 3: Tìm Top ~50 Level3 (Triplets)**
+6. Với mỗi level2 trong top 20:
+   - Lấy các level3 con (children) của level2 đó
+   - Tính cosine similarity với E_feedback
+   - Lấy **top 2-3 level3** cho mỗi level2
+7. Kết quả: ~50 triplets (20 × 2.5 ≈ 50)
+
+**Bước 4: Tính Average Similarity và Sắp Xếp**
+8. Với mỗi triplet (level1, level2, level3):
+   - Tính: `avg_sim = (sim1 + sim2 + sim3) / 3`
+9. Sắp xếp theo `avg_sim` giảm dần
+10. Trả về **top 50 triplets**
+
+### Ưu Điểm
+
+- ⚡ **Nhanh hơn**: Chỉ tính similarity cho subset nhỏ thay vì tất cả combinations
+- 🎯 **Chính xác hơn**: Focus vào những nhánh có similarity cao
+- 📊 **Diverse**: Đảm bảo có triplets từ nhiều nhánh level1 khác nhau
 
 ### Cosine Similarity
 
@@ -333,4 +359,5 @@ LIMIT 10;
 ## Liên Hệ & Hỗ Trợ
 
 Nếu gặp vấn đề hoặc cần hỗ trợ, vui lòng tạo issue hoặc liên hệ team phát triển.
+
 

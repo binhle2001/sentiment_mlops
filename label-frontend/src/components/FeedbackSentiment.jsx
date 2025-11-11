@@ -344,7 +344,7 @@ const FeedbackSentiment = () => {
             </Row>
 
             {/* Intent Analysis Results */}
-            <Divider>Top 10 Intent Triplets (Độ tương đồng cao nhất)</Divider>
+            <Divider>Top 50 Intent Triplets (Độ tương đồng cao nhất)</Divider>
             {loadingIntents ? (
               <div style={{ textAlign: 'center', padding: '20px' }}>
                 <Space direction="vertical">
