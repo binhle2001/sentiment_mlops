@@ -72,6 +72,35 @@ services:
     env_file:
       - .env
 
+  # Sentiment Training Service
+  sentiment-training-service:
+    build:
+      context: ./sentiment-training
+      dockerfile: Dockerfile
+    container_name: sentiment_training_service
+    restart: unless-stopped
+    ports:
+      - "${SENTIMENT_TRAINING_EXTERNAL_PORT:-8010}:${SENTIMENT_TRAINING_PORT:-8010}"
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - label_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${SENTIMENT_TRAINING_PORT:-8010}/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    env_file:
+      - .env
+
   # Label Management Backend Service
   label-backend:
     build:
