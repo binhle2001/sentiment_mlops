@@ -99,16 +99,6 @@ export const feedbackAPI = {
   getFeedback: (id) => {
     return api.get(`/feedbacks/${id}`);
   },
-
-  // Get or compute intent analysis for a feedback
-  getIntentsForFeedback: (feedbackId) => {
-    return api.post(`/feedbacks/${feedbackId}/intents`);
-  },
-
-  // Get cached intent analysis for a feedback
-  getCachedIntents: (feedbackId) => {
-    return api.get(`/feedbacks/${feedbackId}/intents`);
-  },
 };
 
 export default api;

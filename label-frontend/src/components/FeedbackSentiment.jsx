@@ -38,8 +38,6 @@ const FeedbackSentiment = () => {
   const [pageSize, setPageSize] = useState(10);
   const [filters, setFilters] = useState({});
   const [latestResult, setLatestResult] = useState(null);
-  const [topIntents, setTopIntents] = useState([]);
-  const [loadingIntents, setLoadingIntents] = useState(false);
 
   // Fetch feedbacks on mount and when pagination/filters change
   useEffect(() => {
@@ -74,11 +72,14 @@ const FeedbackSentiment = () => {
       );
       
       setLatestResult(response);
-      message.success('Phân tích sentiment thành công!');
-      form.resetFields();
       
-      // Get intent analysis for the feedback
-      fetchIntentsForFeedback(response.id);
+      if (response.level1_id) {
+        message.success('Phân tích sentiment và intent thành công!');
+      } else {
+        message.success('Phân tích sentiment thành công! (Intent không khả dụng)');
+      }
+      
+      form.resetFields();
       
       // Refresh the list
       setCurrentPage(1);
@@ -91,22 +92,6 @@ const FeedbackSentiment = () => {
     }
   };
 
-  const fetchIntentsForFeedback = async (feedbackId) => {
-    try {
-      setLoadingIntents(true);
-      const response = await feedbackAPI.getIntentsForFeedback(feedbackId);
-      setTopIntents(response.intents || []);
-      if (response.intents && response.intents.length > 0) {
-        message.success(`Phân tích intent thành công! Tìm thấy ${response.intents.length} intent phù hợp.`);
-      }
-    } catch (error) {
-      message.warning('Không thể phân tích intent. Có thể chưa có đủ dữ liệu label.');
-      console.error('Error fetching intents:', error);
-      setTopIntents([]);
-    } finally {
-      setLoadingIntents(false);
-    }
-  };
 
   const getSentimentColor = (label) => {
     switch (label) {
@@ -169,10 +154,10 @@ const FeedbackSentiment = () => {
       title: 'Nội dung Feedback',
       dataIndex: 'feedback_text',
       key: 'feedback_text',
-      width: '40%',
+      width: '30%',
       ellipsis: true,
       render: (text) => (
-        <Text ellipsis={{ tooltip: text }} style={{ maxWidth: 400 }}>
+        <Text ellipsis={{ tooltip: text }} style={{ maxWidth: 300 }}>
           {text}
         </Text>
       ),
@@ -181,7 +166,7 @@ const FeedbackSentiment = () => {
       title: 'Sentiment',
       dataIndex: 'sentiment_label',
       key: 'sentiment_label',
-      width: '15%',
+      width: '12%',
       filters: [
         { text: 'Tích cực', value: 'POSITIVE' },
         { text: 'Tiêu cực', value: 'NEGATIVE' },
@@ -195,18 +180,37 @@ const FeedbackSentiment = () => {
       ),
     },
     {
-      title: 'Độ tin cậy',
-      dataIndex: 'confidence_score',
-      key: 'confidence_score',
-      width: '12%',
-      render: (score) => `${(score * 100).toFixed(2)}%`,
-      sorter: (a, b) => a.confidence_score - b.confidence_score,
+      title: 'Intent Classification',
+      key: 'intent',
+      width: '30%',
+      render: (text, record) => {
+        if (record.level1_id) {
+          return (
+            <Space direction="vertical" size={2}>
+              <div>
+                <Tag color="blue" style={{ fontSize: '11px' }}>
+                  {record.level1_name}
+                </Tag>
+                <span style={{ fontSize: '11px' }}>→</span>
+                <Tag color="cyan" style={{ fontSize: '11px' }}>
+                  {record.level2_name}
+                </Tag>
+                <span style={{ fontSize: '11px' }}>→</span>
+                <Tag color="geekblue" style={{ fontSize: '11px' }}>
+                  {record.level3_name}
+                </Tag>
+              </div>
+            </Space>
+          );
+        }
+        return <Text type="secondary" style={{ fontSize: '11px' }}>Chưa phân loại</Text>;
+      },
     },
     {
       title: 'Nguồn',
       dataIndex: 'feedback_source',
       key: 'feedback_source',
-      width: '13%',
+      width: '10%',
       filters: [
         { text: 'Web', value: 'web' },
         { text: 'App', value: 'app' },
@@ -220,7 +224,7 @@ const FeedbackSentiment = () => {
       title: 'Thời gian',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: '20%',
+      width: '18%',
       render: (date) => new Date(date).toLocaleString('vi-VN'),
       sorter: (a, b) => new Date(a.created_at) - new Date(b.created_at),
     },
@@ -343,62 +347,34 @@ const FeedbackSentiment = () => {
               </Col>
             </Row>
 
-            {/* Intent Analysis Results */}
-            <Divider>Top 50 Intent Triplets (Độ tương đồng cao nhất)</Divider>
-            {loadingIntents ? (
-              <div style={{ textAlign: 'center', padding: '20px' }}>
-                <Space direction="vertical">
-                  <ReloadOutlined spin style={{ fontSize: '24px' }} />
-                  <Text>Đang phân tích intent...</Text>
-                </Space>
-              </div>
-            ) : topIntents.length > 0 ? (
-              <Table
-                dataSource={topIntents}
-                pagination={false}
-                size="small"
-                rowKey={(record, index) => `${record.level1.id}-${record.level2.id}-${record.level3.id}-${index}`}
-                columns={[
-                  {
-                    title: '#',
-                    key: 'index',
-                    width: '5%',
-                    render: (text, record, index) => index + 1,
-                  },
-                  {
-                    title: 'Intent Path',
-                    key: 'intent_path',
-                    width: '75%',
-                    render: (text, record) => (
-                      <Text>
-                        <Tag color="blue">{record.level1.name}</Tag>
-                        <span style={{ margin: '0 8px' }}>→</span>
-                        <Tag color="cyan">{record.level2.name}</Tag>
-                        <span style={{ margin: '0 8px' }}>→</span>
-                        <Tag color="geekblue">{record.level3.name}</Tag>
+            {/* Intent Classification Result (by Gemini AI) */}
+            {latestResult.level1_id && (
+              <>
+                <Divider>Phân loại Intent (Gemini AI)</Divider>
+                <Card style={{ background: '#f6ffed', borderColor: '#b7eb8f' }}>
+                  <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                    <div>
+                      <Text strong style={{ fontSize: '16px', marginRight: '8px' }}>
+                        Intent được chọn:
                       </Text>
-                    ),
-                  },
-                  {
-                    title: 'Độ tương đồng',
-                    key: 'similarity',
-                    width: '20%',
-                    align: 'center',
-                    render: (text, record) => (
-                      <Tag color={record.avg_cosine_similarity >= 0.7 ? 'green' : record.avg_cosine_similarity >= 0.5 ? 'orange' : 'default'}>
-                        {(record.avg_cosine_similarity * 100).toFixed(2)}%
+                      <Tag color="blue" style={{ fontSize: '14px', padding: '4px 12px' }}>
+                        {latestResult.level1_name}
                       </Tag>
-                    ),
-                    sorter: (a, b) => a.avg_cosine_similarity - b.avg_cosine_similarity,
-                  },
-                ]}
-              />
-            ) : (
-              <div style={{ textAlign: 'center', padding: '20px' }}>
-                <Text type="secondary">
-                  Không có intent nào được tìm thấy. Vui lòng đảm bảo labels đã có embedding.
-                </Text>
-              </div>
+                      <span style={{ margin: '0 8px', fontSize: '16px' }}>→</span>
+                      <Tag color="cyan" style={{ fontSize: '14px', padding: '4px 12px' }}>
+                        {latestResult.level2_name}
+                      </Tag>
+                      <span style={{ margin: '0 8px', fontSize: '16px' }}>→</span>
+                      <Tag color="geekblue" style={{ fontSize: '14px', padding: '4px 12px' }}>
+                        {latestResult.level3_name}
+                      </Tag>
+                    </div>
+                    <Text type="secondary" style={{ fontSize: '12px' }}>
+                      ✨ Được chọn tự động bởi Gemini AI từ các ứng viên có độ tương đồng cao nhất
+                    </Text>
+                  </Space>
+                </Card>
+              </>
             )}
           </>
         )}

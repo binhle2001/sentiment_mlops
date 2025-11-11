@@ -50,6 +50,12 @@ class Settings(BaseSettings):
         description="URL of the embedding service"
     )
     
+    # Gemini AI settings
+    gemini_api_key: str = Field(
+        default="",
+        description="Google Gemini API key for intent classification"
+    )
+    
     @property
     def database_url(self) -> str:
         """Construct PostgreSQL database URL."""

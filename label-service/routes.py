@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from database import get_db
 from crud import LabelCRUD, FeedbackSentimentCRUD, FeedbackIntentCRUD
+from gemini_service import get_gemini_service
 from schemas import (
     LabelCreate,
     LabelUpdate,
@@ -329,15 +330,19 @@ async def call_embedding_service(text: str) -> list:
     "/feedbacks",
     response_model=FeedbackSentimentResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Submit feedback and analyze sentiment"
+    summary="Submit feedback and analyze sentiment + intent"
 )
 async def create_feedback_sentiment(feedback_data: FeedbackSentimentCreate):
-    """Submit customer feedback and get sentiment analysis."""
+    """
+    Submit customer feedback and get:
+    1. Sentiment analysis (positive/negative/neutral)
+    2. Intent classification using Gemini AI (level 1, 2, 3 labels)
+    """
     try:
-        # Call sentiment service to classify the feedback
+        # Step 1: Call sentiment service
+        logger.info(f"Analyzing sentiment for feedback: {feedback_data.feedback_text[:50]}...")
         sentiment_result = await call_sentiment_service(feedback_data.feedback_text)
         
-        # Extract sentiment label and score
         sentiment_label = sentiment_result.get("label")
         confidence_score = sentiment_result.get("score")
         
@@ -347,14 +352,70 @@ async def create_feedback_sentiment(feedback_data: FeedbackSentimentCreate):
                 detail="Invalid response from sentiment service"
             )
         
-        # Save to database
+        # Step 2: Get embedding for feedback
+        logger.info("Getting embedding for feedback...")
+        feedback_embedding = await call_embedding_service(feedback_data.feedback_text)
+        
+        if not feedback_embedding:
+            logger.warning("Failed to get embedding, saving feedback without intent")
+            with get_db() as conn:
+                feedback = FeedbackSentimentCRUD.create(
+                    conn, feedback_data, sentiment_label, confidence_score
+                )
+                return feedback
+        
+        # Step 3: Get top 10 intent candidates (5 L1 → 15 L2 → 50 L3 → 10 best)
+        logger.info("Calculating top 10 intent candidates...")
         with get_db() as conn:
-            feedback = FeedbackSentimentCRUD.create(
+            intent_candidates = FeedbackIntentCRUD.get_top_intents(
                 conn,
-                feedback_data,
-                sentiment_label,
-                confidence_score
+                feedback_embedding,
+                limit=10,
+                top_level1=5,
+                top_level2_total=15,
+                top_level3_total=50
             )
+        
+        if not intent_candidates:
+            logger.warning("No intent candidates found, saving feedback without intent")
+            with get_db() as conn:
+                feedback = FeedbackSentimentCRUD.create(
+                    conn, feedback_data, sentiment_label, confidence_score
+                )
+                return feedback
+        
+        # Step 4: Use Gemini to select best intent from top 10
+        logger.info(f"Calling Gemini to select best intent from {len(intent_candidates)} candidates...")
+        try:
+            gemini_service = get_gemini_service()
+            selected_intent = gemini_service.select_best_intent(
+                feedback_data.feedback_text,
+                intent_candidates
+            )
+        except Exception as e:
+            logger.error(f"Gemini service error: {e}, continuing without intent")
+            selected_intent = None
+        
+        # Step 5: Save to database with selected intent
+        with get_db() as conn:
+            if selected_intent:
+                feedback = FeedbackSentimentCRUD.create(
+                    conn,
+                    feedback_data,
+                    sentiment_label,
+                    confidence_score,
+                    level1_id=selected_intent['level1']['id'],
+                    level2_id=selected_intent['level2']['id'],
+                    level3_id=selected_intent['level3']['id']
+                )
+                logger.info(f"Feedback saved with intent: {selected_intent['level1']['name']} → "
+                          f"{selected_intent['level2']['name']} → {selected_intent['level3']['name']}")
+            else:
+                feedback = FeedbackSentimentCRUD.create(
+                    conn, feedback_data, sentiment_label, confidence_score
+                )
+                logger.warning("Feedback saved without intent (Gemini failed)")
+            
             return feedback
     
     except HTTPException:

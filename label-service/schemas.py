@@ -144,6 +144,12 @@ class FeedbackSentimentResponse(BaseModel):
     confidence_score: float
     feedback_source: FeedbackSource
     created_at: datetime
+    level1_id: Optional[UUID] = None
+    level2_id: Optional[UUID] = None
+    level3_id: Optional[UUID] = None
+    level1_name: Optional[str] = None
+    level2_name: Optional[str] = None
+    level3_name: Optional[str] = None
     
     class Config:
         from_attributes = True

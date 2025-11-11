@@ -359,13 +359,20 @@ class FeedbackSentimentCRUD:
         conn,
         feedback_data: FeedbackSentimentCreate,
         sentiment_label: str,
-        confidence_score: float
+        confidence_score: float,
+        level1_id: Optional[UUID] = None,
+        level2_id: Optional[UUID] = None,
+        level3_id: Optional[UUID] = None
     ) -> Dict[str, Any]:
-        """Create a new feedback sentiment record."""
+        """Create a new feedback sentiment record with optional intent labels."""
         query = """
-            INSERT INTO feedback_sentiments (feedback_text, sentiment_label, confidence_score, feedback_source)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id, feedback_text, sentiment_label, confidence_score, feedback_source, created_at
+            INSERT INTO feedback_sentiments (
+                feedback_text, sentiment_label, confidence_score, feedback_source,
+                level1_id, level2_id, level3_id
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, feedback_text, sentiment_label, confidence_score, feedback_source, 
+                      level1_id, level2_id, level3_id, created_at
         """
         
         from database import execute_query
@@ -373,21 +380,39 @@ class FeedbackSentimentCRUD:
         result = execute_query(
             conn,
             query,
-            (feedback_data.feedback_text, sentiment_label, confidence_score, feedback_data.feedback_source.value),
+            (
+                feedback_data.feedback_text, 
+                sentiment_label, 
+                confidence_score, 
+                feedback_data.feedback_source.value,
+                str(level1_id) if level1_id else None,
+                str(level2_id) if level2_id else None,
+                str(level3_id) if level3_id else None
+            ),
             fetch="one"
         )
         
         feedback = row_to_dict(result)
-        logger.info(f"Created feedback sentiment: id={feedback['id']}, label={sentiment_label}")
+        logger.info(f"Created feedback sentiment: id={feedback['id']}, label={sentiment_label}, "
+                   f"intent=({level1_id}, {level2_id}, {level3_id})")
         return feedback
     
     @staticmethod
     def get_by_id(conn, feedback_id: UUID) -> Optional[Dict[str, Any]]:
-        """Get feedback sentiment by ID."""
+        """Get feedback sentiment by ID with labels."""
         query = """
-            SELECT id, feedback_text, sentiment_label, confidence_score, feedback_source, created_at
-            FROM feedback_sentiments
-            WHERE id = %s
+            SELECT 
+                fs.id, fs.feedback_text, fs.sentiment_label, fs.confidence_score, 
+                fs.feedback_source, fs.created_at,
+                fs.level1_id, fs.level2_id, fs.level3_id,
+                l1.name as level1_name,
+                l2.name as level2_name,
+                l3.name as level3_name
+            FROM feedback_sentiments fs
+            LEFT JOIN labels l1 ON fs.level1_id = l1.id
+            LEFT JOIN labels l2 ON fs.level2_id = l2.id
+            LEFT JOIN labels l3 ON fs.level3_id = l3.id
+            WHERE fs.id = %s
         """
         
         from database import execute_query
@@ -484,28 +509,29 @@ class FeedbackIntentCRUD:
     def get_top_intents(
         conn,
         feedback_embedding: list,
-        limit: int = 50,
+        limit: int = 10,
         top_level1: int = 5,
-        top_level2_per_level1: int = 4,
-        top_level3_per_level2: int = 3
+        top_level2_total: int = 15,
+        top_level3_total: int = 50
     ) -> List[Dict[str, Any]]:
         """
         Calculate top intent triplets using hierarchical top-down approach.
         
-        Algorithm:
+        NEW Algorithm (for Gemini):
         1. Find top 5 level1 labels with highest cosine similarity
-        2. For each top level1, find top 4 level2 children → ~20 level2
-        3. For each top level2, find top 2-3 level3 children → ~50 triplets
+        2. From 5 L1, get ALL L2 children → select top 15 L2 (cross all L1)
+        3. From 15 L2, get ALL L3 children → select top 50 L3 (cross all L2)
+        4. Rerank triplets by avg similarity → return top 10 for Gemini
         
         Args:
             feedback_embedding: Embedding vector of feedback text
-            limit: Maximum number of triplets to return (default: 50)
+            limit: Maximum number of triplets to return for Gemini (default: 10)
             top_level1: Number of top level1 to consider (default: 5)
-            top_level2_per_level1: Number of top level2 per level1 (default: 4)
-            top_level3_per_level2: Number of top level3 per level2 (default: 3)
+            top_level2_total: Total number of top level2 across all L1 (default: 15)
+            top_level3_total: Total number of top level3 across all L2 (default: 50)
         
         Returns:
-            List of triplets with level1, level2, level3 and avg_cosine_similarity
+            List of top 10 triplets with level1, level2, level3 and avg_cosine_similarity
         """
         # Get all labels with embeddings grouped by level
         labels_by_level = LabelCRUD.get_all_with_embeddings(conn)
@@ -552,39 +578,38 @@ class FeedbackIntentCRUD:
         
         logger.debug(f"Selected top {len(top_level1_items)} level1 labels")
         
-        # Step 2: For each top level1, get top level2 children
-        level2_with_sim = []
+        # Step 2: Get ALL level2 children from top 5 level1, then select top N total
+        all_l2_candidates = []
         for l1_item in top_level1_items:
             l1 = l1_item['label']
             l1_id = str(l1['id'])
             sim1 = l1_item['similarity']
             
-            # Get level2 children
+            # Get ALL level2 children of this level1
             l2_children = level2_by_parent.get(l1_id, [])
             if not l2_children:
                 continue
             
             # Calculate similarity for each level2 child
-            l2_candidates = []
             for l2 in l2_children:
                 if not l2['embedding']:
                     continue
                 sim2 = FeedbackIntentCRUD.cosine_similarity(feedback_embedding, l2['embedding'])
-                l2_candidates.append({
+                all_l2_candidates.append({
                     'level1': l1,
                     'level1_sim': sim1,
                     'level2': l2,
                     'level2_sim': sim2
                 })
-            
-            # Sort by level2 similarity and take top N
-            l2_candidates.sort(key=lambda x: x['level2_sim'], reverse=True)
-            level2_with_sim.extend(l2_candidates[:top_level2_per_level1])
         
-        logger.debug(f"Selected {len(level2_with_sim)} level2 labels")
+        # Sort ALL level2 by similarity and take top N (cross all level1)
+        all_l2_candidates.sort(key=lambda x: x['level2_sim'], reverse=True)
+        level2_with_sim = all_l2_candidates[:top_level2_total]
         
-        # Step 3: For each selected level2, get top level3 children
-        triplets = []
+        logger.debug(f"Selected top {len(level2_with_sim)} level2 labels (from {len(all_l2_candidates)} candidates)")
+        
+        # Step 3: Get ALL level3 children from top 15 level2, then select top N total
+        all_triplet_candidates = []
         for l2_item in level2_with_sim:
             l1 = l2_item['level1']
             l2 = l2_item['level2']
@@ -592,13 +617,12 @@ class FeedbackIntentCRUD:
             sim2 = l2_item['level2_sim']
             l2_id = str(l2['id'])
             
-            # Get level3 children
+            # Get ALL level3 children of this level2
             l3_children = level3_by_parent.get(l2_id, [])
             if not l3_children:
                 continue
             
             # Calculate similarity for each level3 child
-            l3_candidates = []
             for l3 in l3_children:
                 if not l3['embedding']:
                     continue
@@ -607,7 +631,7 @@ class FeedbackIntentCRUD:
                 # Calculate average similarity across all 3 levels
                 avg_similarity = (sim1 + sim2 + sim3) / 3.0
                 
-                l3_candidates.append({
+                all_triplet_candidates.append({
                     'level1': l1,
                     'level2': l2,
                     'level3': l3,
@@ -616,125 +640,18 @@ class FeedbackIntentCRUD:
                     'level2_sim': sim2,
                     'level3_sim': sim3
                 })
-            
-            # Sort by level3 similarity and take top N
-            l3_candidates.sort(key=lambda x: x['level3_sim'], reverse=True)
-            triplets.extend(l3_candidates[:top_level3_per_level2])
         
-        logger.debug(f"Generated {len(triplets)} triplets")
+        # Sort ALL triplets by level3 similarity and take top N (cross all level2)
+        all_triplet_candidates.sort(key=lambda x: x['level3_sim'], reverse=True)
+        triplets_top50 = all_triplet_candidates[:top_level3_total]
         
-        # Sort all triplets by average similarity and return top N
-        triplets.sort(key=lambda x: x['avg_cosine_similarity'], reverse=True)
+        logger.debug(f"Selected top {len(triplets_top50)} triplets (from {len(all_triplet_candidates)} candidates)")
         
-        return triplets[:limit]
+        # Step 4: Rerank by average similarity and return top 10 for Gemini
+        triplets_top50.sort(key=lambda x: x['avg_cosine_similarity'], reverse=True)
+        final_triplets = triplets_top50[:limit]
+        
+        logger.info(f"Returning top {len(final_triplets)} triplets for Gemini selection")
+        
+        return final_triplets
     
-    @staticmethod
-    def save_intents(
-        conn,
-        feedback_id: UUID,
-        intents: List[Dict[str, Any]]
-    ) -> int:
-        """Save intent analysis results to database."""
-        # First, delete existing intents for this feedback
-        delete_query = "DELETE FROM feedback_intents WHERE feedback_id = %s"
-        
-        from database import execute_query
-        execute_query(conn, delete_query, (str(feedback_id),), fetch="none")
-        
-        # Insert new intents
-        insert_query = """
-            INSERT INTO feedback_intents (feedback_id, level1_id, level2_id, level3_id, avg_cosine_similarity)
-            VALUES (%s, %s, %s, %s, %s)
-        """
-        
-        count = 0
-        for intent in intents:
-            execute_query(
-                conn,
-                insert_query,
-                (
-                    str(feedback_id),
-                    str(intent['level1']['id']),
-                    str(intent['level2']['id']),
-                    str(intent['level3']['id']),
-                    intent['avg_cosine_similarity']
-                ),
-                fetch="none"
-            )
-            count += 1
-        
-        logger.info(f"Saved {count} intents for feedback id={feedback_id}")
-        return count
-    
-    @staticmethod
-    def get_cached_intents(
-        conn,
-        feedback_id: UUID,
-        limit: int = 10
-    ) -> Optional[List[Dict[str, Any]]]:
-        """Get cached intent analysis results from database."""
-        query = """
-            SELECT 
-                fi.id,
-                fi.feedback_id,
-                fi.avg_cosine_similarity,
-                fi.created_at,
-                l1.id as l1_id, l1.name as l1_name, l1.level as l1_level, 
-                l1.parent_id as l1_parent_id, l1.description as l1_description,
-                l1.created_at as l1_created_at, l1.updated_at as l1_updated_at,
-                l2.id as l2_id, l2.name as l2_name, l2.level as l2_level,
-                l2.parent_id as l2_parent_id, l2.description as l2_description,
-                l2.created_at as l2_created_at, l2.updated_at as l2_updated_at,
-                l3.id as l3_id, l3.name as l3_name, l3.level as l3_level,
-                l3.parent_id as l3_parent_id, l3.description as l3_description,
-                l3.created_at as l3_created_at, l3.updated_at as l3_updated_at
-            FROM feedback_intents fi
-            JOIN labels l1 ON fi.level1_id = l1.id
-            JOIN labels l2 ON fi.level2_id = l2.id
-            JOIN labels l3 ON fi.level3_id = l3.id
-            WHERE fi.feedback_id = %s
-            ORDER BY fi.avg_cosine_similarity DESC
-            LIMIT %s
-        """
-        
-        from database import execute_query
-        results = execute_query(conn, query, (str(feedback_id), limit), fetch="all")
-        
-        if not results:
-            return None
-        
-        intents = []
-        for row in results:
-            row_dict = dict(row)
-            intents.append({
-                'level1': {
-                    'id': row_dict['l1_id'],
-                    'name': row_dict['l1_name'],
-                    'level': row_dict['l1_level'],
-                    'parent_id': row_dict['l1_parent_id'],
-                    'description': row_dict['l1_description'],
-                    'created_at': row_dict['l1_created_at'],
-                    'updated_at': row_dict['l1_updated_at']
-                },
-                'level2': {
-                    'id': row_dict['l2_id'],
-                    'name': row_dict['l2_name'],
-                    'level': row_dict['l2_level'],
-                    'parent_id': row_dict['l2_parent_id'],
-                    'description': row_dict['l2_description'],
-                    'created_at': row_dict['l2_created_at'],
-                    'updated_at': row_dict['l2_updated_at']
-                },
-                'level3': {
-                    'id': row_dict['l3_id'],
-                    'name': row_dict['l3_name'],
-                    'level': row_dict['l3_level'],
-                    'parent_id': row_dict['l3_parent_id'],
-                    'description': row_dict['l3_description'],
-                    'created_at': row_dict['l3_created_at'],
-                    'updated_at': row_dict['l3_updated_at']
-                },
-                'avg_cosine_similarity': row_dict['avg_cosine_similarity']
-            })
-        
-        return intents
