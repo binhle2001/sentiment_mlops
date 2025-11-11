@@ -11,7 +11,13 @@ Script `seed_data.py` giúp bạn dễ dàng seed data cho hệ thống Intent A
    docker-compose up -d
    ```
 
-2. **Python 3.7+** và package `requests`:
+2. **Database migration đã chạy:**
+   ```bash
+   pip install psycopg2-binary python-dotenv
+   python migrate.py
+   ```
+
+3. **Python 3.7+** và package `requests`:
    ```bash
    pip install requests
    ```

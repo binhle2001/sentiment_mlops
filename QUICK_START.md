@@ -49,14 +49,24 @@ LABEL_FRONTEND_PORT=3345
 VITE_API_URL=http://localhost:8001/api/v1
 ```
 
-### Bước 3: Khởi động lại Docker services
+### Bước 3: Khởi động Docker services
 
 ```bash
-# Stop các services hiện tại
+# Stop các services hiện tại (nếu đang chạy)
 docker-compose down
 
-# Start lại với config mới
+# Start với config mới
 docker-compose up -d --build
+```
+
+### Bước 3.5: Chạy Database Migration
+
+```bash
+# Cài đặt dependencies nếu chưa có
+pip install psycopg2-binary python-dotenv
+
+# Chạy migration
+python migrate.py
 ```
 
 ### Bước 4: Kiểm tra services đang chạy
