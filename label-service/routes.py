@@ -654,7 +654,7 @@ async def seed_feedback_intents(recompute: bool = False):
                 from database import execute_query
                 results = execute_query(
                     conn,
-                    "SELECT id, feedback_text FROM feedback_sentiments ORDER BY created_at DESC",
+                    "SELECT id, feedback_text, created_at FROM feedback_sentiments ORDER BY created_at DESC",
                     fetch="all"
                 )
                 feedbacks = [dict(row) for row in results] if results else []
@@ -664,7 +664,7 @@ async def seed_feedback_intents(recompute: bool = False):
                 results = execute_query(
                     conn,
                     """
-                    SELECT DISTINCT fs.id, fs.feedback_text
+                    SELECT DISTINCT fs.id, fs.feedback_text, fs.created_at
                     FROM feedback_sentiments fs
                     LEFT JOIN feedback_intents fi ON fs.id = fi.feedback_id
                     WHERE fi.id IS NULL

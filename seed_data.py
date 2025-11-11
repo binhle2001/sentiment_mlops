@@ -13,13 +13,16 @@ import argparse
 import requests
 import sys
 import time
+import os
 from datetime import datetime
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
 
-# Cấu hình
-API_BASE_URL = "http://localhost:8001/api/v1"
-
-# Lưu ý: Nếu bạn đổi LABEL_BACKEND_PORT trong .env, cần update lại URL này
+# Cấu hình - Đọc từ environment variables
+LABEL_BACKEND_PORT = os.getenv('LABEL_BACKEND_PORT', '8001')
+API_BASE_URL = f"http://localhost:{LABEL_BACKEND_PORT}/api/v1"
 
 
 def print_banner():
@@ -169,8 +172,25 @@ Note: Services phải đang chạy trong Docker (docker-compose up -d)
         action='store_true',
         help='Chỉ seed intents cho feedbacks'
     )
+    parser.add_argument(
+        '--host',
+        type=str,
+        default='localhost',
+        help='Host của label backend (default: localhost)'
+    )
+    parser.add_argument(
+        '--port',
+        type=int,
+        help='Port của label backend (default: đọc từ LABEL_BACKEND_PORT trong .env)'
+    )
     
     args = parser.parse_args()
+    
+    # Override API_BASE_URL if custom host/port provided
+    global API_BASE_URL
+    host = args.host
+    port = args.port if args.port else LABEL_BACKEND_PORT
+    API_BASE_URL = f"http://{host}:{port}/api/v1"
     
     # Print banner
     print_banner()
