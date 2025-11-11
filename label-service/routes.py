@@ -20,6 +20,7 @@ from schemas import (
     BulkLabelCreate,
     BulkLabelResponse,
     FeedbackSentimentCreate,
+    FeedbackSentimentUpdate,
     FeedbackSentimentResponse,
     FeedbackSentimentListResponse,
     FeedbackSource,
@@ -425,6 +426,37 @@ async def create_feedback_sentiment(feedback_data: FeedbackSentimentCreate):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create feedback"
+        )
+
+
+@router.put(
+    "/feedbacks/{feedback_id}",
+    response_model=FeedbackSentimentResponse,
+    summary="Update sentiment or intent labels for a feedback"
+)
+def update_feedback_sentiment(feedback_id: UUID, update_data: FeedbackSentimentUpdate):
+    """Manually update sentiment label and/or intent hierarchy for an existing feedback."""
+    try:
+        with get_db() as conn:
+            updated_feedback = FeedbackSentimentCRUD.update(conn, feedback_id, update_data)
+            if not updated_feedback:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Feedback with id {feedback_id} not found"
+                )
+            return updated_feedback
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating feedback {feedback_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update feedback"
         )
 
 

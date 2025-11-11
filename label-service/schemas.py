@@ -136,6 +136,26 @@ class FeedbackSentimentCreate(BaseModel):
     feedback_source: FeedbackSource = Field(..., description="Source of the feedback")
 
 
+class FeedbackSentimentUpdate(BaseModel):
+    """Schema for updating sentiment label and/or intent for a feedback."""
+    sentiment_label: Optional[SentimentLabel] = Field(
+        default=None,
+        description="Updated sentiment label",
+    )
+    level1_id: Optional[UUID] = Field(
+        default=None,
+        description="Selected level 1 label ID (or null to clear intent)",
+    )
+    level2_id: Optional[UUID] = Field(
+        default=None,
+        description="Selected level 2 label ID (must be child of level1)",
+    )
+    level3_id: Optional[UUID] = Field(
+        default=None,
+        description="Selected level 3 label ID (must be child of level2)",
+    )
+
+
 class FeedbackSentimentResponse(BaseModel):
     """Schema for feedback sentiment response."""
     id: UUID

@@ -4,7 +4,12 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
 from datetime import datetime
 
-from schemas import LabelCreate, LabelUpdate, FeedbackSentimentCreate
+from schemas import (
+    LabelCreate,
+    LabelUpdate,
+    FeedbackSentimentCreate,
+    FeedbackSentimentUpdate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -411,6 +416,121 @@ class FeedbackSentimentCRUD:
             logger.warning("Failed to enrich feedback %s with label names: %s", feedback["id"], exc)
         
         return feedback
+
+    @staticmethod
+    def update(
+        conn,
+        feedback_id: UUID,
+        update_data: FeedbackSentimentUpdate,
+    ) -> Optional[Dict[str, Any]]:
+        """Update sentiment label and/or intent hierarchy for a feedback."""
+        existing = FeedbackSentimentCRUD.get_by_id(conn, feedback_id)
+        if not existing:
+            return None
+
+        update_payload = update_data.model_dump(exclude_unset=True)
+
+        # Normalize sentiment label value (enum -> str)
+        sentiment_label = update_payload.get("sentiment_label")
+        if sentiment_label is not None and hasattr(sentiment_label, "value"):
+            sentiment_label = sentiment_label.value
+
+        # Determine desired state for each level (fallback to existing if not provided)
+        new_level1_id = update_payload.get("level1_id", existing.get("level1_id"))
+        new_level2_id = update_payload.get("level2_id", existing.get("level2_id"))
+        new_level3_id = update_payload.get("level3_id", existing.get("level3_id"))
+
+        # If level1 is explicitly cleared, cascade reset level2 & level3
+        if "level1_id" in update_payload and update_payload["level1_id"] is None:
+            new_level2_id = None
+            new_level3_id = None
+
+        # If level2 cleared (explicitly or due to level1 change), ensure level3 cleared too
+        if "level2_id" in update_payload and update_payload["level2_id"] is None:
+            new_level3_id = None
+
+        # Validate hierarchy when IDs are present
+        def _load_label(label_id: Optional[UUID]) -> Optional[Dict[str, Any]]:
+            if label_id is None:
+                return None
+            label = LabelCRUD.get_by_id(conn, label_id)
+            if not label:
+                raise ValueError(f"Label with id {label_id} not found")
+            return label
+
+        level1_label = _load_label(new_level1_id)
+        level2_label = _load_label(new_level2_id)
+        level3_label = _load_label(new_level3_id)
+
+        if level1_label and level1_label["level"] != 1:
+            raise ValueError("Level 1 intent phải là label cấp 1")
+
+        if level2_label:
+            if level2_label["level"] != 2:
+                raise ValueError("Level 2 intent phải là label cấp 2")
+            if not new_level1_id:
+                raise ValueError("Phải chọn Level 1 trước khi chọn Level 2")
+            if str(level2_label["parent_id"]) != str(new_level1_id):
+                raise ValueError("Level 2 được chọn không thuộc Level 1 đã chọn")
+
+        if level3_label:
+            if level3_label["level"] != 3:
+                raise ValueError("Level 3 intent phải là label cấp 3")
+            if not new_level2_id:
+                raise ValueError("Phải chọn Level 2 trước khi chọn Level 3")
+            if str(level3_label["parent_id"]) != str(new_level2_id):
+                raise ValueError("Level 3 được chọn không thuộc Level 2 đã chọn")
+
+        # Ensure hierarchy consistency when parent missing
+        if not new_level1_id:
+            new_level2_id = None
+            new_level3_id = None
+        elif not new_level2_id:
+            new_level3_id = None
+
+        update_fields = []
+        params = []
+
+        if sentiment_label is not None and sentiment_label != existing.get("sentiment_label"):
+            update_fields.append("sentiment_label = %s")
+            params.append(sentiment_label)
+
+        if new_level1_id != existing.get("level1_id"):
+            update_fields.append("level1_id = %s")
+            params.append(str(new_level1_id) if new_level1_id else None)
+
+        if new_level2_id != existing.get("level2_id"):
+            update_fields.append("level2_id = %s")
+            params.append(str(new_level2_id) if new_level2_id else None)
+
+        if new_level3_id != existing.get("level3_id"):
+            update_fields.append("level3_id = %s")
+            params.append(str(new_level3_id) if new_level3_id else None)
+
+        if not update_fields:
+            logger.info("No changes detected for feedback %s; skipping update", feedback_id)
+            return existing
+
+        params.append(str(feedback_id))
+        query = f"""
+            UPDATE feedback_sentiments
+            SET {', '.join(update_fields)}
+            WHERE id = %s
+        """
+
+        from database import execute_query
+
+        execute_query(conn, query, tuple(params), fetch="none")
+
+        updated_feedback = FeedbackSentimentCRUD.get_by_id(conn, feedback_id)
+        logger.info(
+            "Updated feedback %s sentiment/intent -> level1=%s, level2=%s, level3=%s",
+            feedback_id,
+            new_level1_id,
+            new_level2_id,
+            new_level3_id,
+        )
+        return updated_feedback
     
     @staticmethod
     def get_by_id(conn, feedback_id: UUID) -> Optional[Dict[str, Any]]:

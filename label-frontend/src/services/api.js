@@ -99,6 +99,11 @@ export const feedbackAPI = {
   getFeedback: (id) => {
     return api.get(`/feedbacks/${id}`);
   },
+
+  // Update sentiment and intent labels for a feedback
+  updateFeedback: (id, payload) => {
+    return api.put(`/feedbacks/${id}`, payload);
+  },
 };
 
 export default api;

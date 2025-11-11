@@ -5,6 +5,7 @@ import {
   Input,
   Select,
   Button,
+  Modal,
   Table,
   Tag,
   Space,
@@ -23,7 +24,7 @@ import {
   SendOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
-import { feedbackAPI } from '../services/api';
+import { feedbackAPI, labelAPI } from '../services/api';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
@@ -38,6 +39,38 @@ const FeedbackSentiment = () => {
   const [pageSize, setPageSize] = useState(10);
   const [filters, setFilters] = useState({});
   const [latestResult, setLatestResult] = useState(null);
+  const [editForm] = Form.useForm();
+  const [labelTree, setLabelTree] = useState([]);
+  const [availableLevel2, setAvailableLevel2] = useState([]);
+  const [availableLevel3, setAvailableLevel3] = useState([]);
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editingFeedback, setEditingFeedback] = useState(null);
+  const [selectedLevel1, setSelectedLevel1] = useState(null);
+  const [selectedLevel2, setSelectedLevel2] = useState(null);
+  const [selectedLevel3, setSelectedLevel3] = useState(null);
+  const [updatingFeedback, setUpdatingFeedback] = useState(false);
+  const [labelLoading, setLabelLoading] = useState(false);
+
+  const loadLabelTree = async () => {
+    try {
+      setLabelLoading(true);
+      const data = await labelAPI.getTree();
+      const treeData = Array.isArray(data) ? data : [];
+      setLabelTree(treeData);
+      return treeData;
+    } catch (error) {
+      message.error('Không thể tải danh sách intent');
+      console.error('Error fetching label tree:', error);
+      return [];
+    } finally {
+      setLabelLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadLabelTree();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Fetch feedbacks on mount and when pagination/filters change
   useEffect(() => {
@@ -60,6 +93,140 @@ const FeedbackSentiment = () => {
       console.error('Error fetching feedbacks:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleEdit = async (record) => {
+    setEditingFeedback(record);
+
+    let tree = labelTree;
+    if (!tree || tree.length === 0) {
+      tree = await loadLabelTree();
+    }
+
+    setSelectedLevel1(record.level1_id || null);
+    setSelectedLevel2(record.level2_id || null);
+    setSelectedLevel3(record.level3_id || null);
+
+    const level1Node = (tree || []).find((node) => node.id === record.level1_id) || null;
+    setAvailableLevel2(level1Node?.children || []);
+
+    const level2Node =
+      level1Node?.children?.find((child) => child.id === record.level2_id) || null;
+    setAvailableLevel3(level2Node?.children || []);
+
+    editForm.setFieldsValue({
+      sentiment_label: record.sentiment_label,
+      level1_id: record.level1_id || undefined,
+      level2_id: record.level2_id || undefined,
+      level3_id: record.level3_id || undefined,
+    });
+
+    setEditModalVisible(true);
+  };
+
+  const handleLevel1Change = (value) => {
+    const normalized = value || null;
+    setSelectedLevel1(normalized);
+
+    const level1Node = (labelTree || []).find((node) => node.id === value) || null;
+    setAvailableLevel2(level1Node?.children || []);
+    setAvailableLevel3([]);
+    setSelectedLevel2(null);
+    setSelectedLevel3(null);
+    editForm.setFieldsValue({
+      level2_id: undefined,
+      level3_id: undefined,
+    });
+  };
+
+  const handleLevel2Change = (value) => {
+    const normalized = value || null;
+    setSelectedLevel2(normalized);
+
+    const level2Node = (availableLevel2 || []).find((node) => node.id === value) || null;
+    setAvailableLevel3(level2Node?.children || []);
+    setSelectedLevel3(null);
+    editForm.setFieldsValue({
+      level3_id: undefined,
+    });
+  };
+
+  const handleLevel3Change = (value) => {
+    setSelectedLevel3(value || null);
+  };
+
+  const handleEditCancel = () => {
+    setEditModalVisible(false);
+    setEditingFeedback(null);
+    editForm.resetFields();
+    setAvailableLevel2([]);
+    setAvailableLevel3([]);
+    setSelectedLevel1(null);
+    setSelectedLevel2(null);
+    setSelectedLevel3(null);
+  };
+
+  const handleEditSubmit = async () => {
+    try {
+      const values = await editForm.validateFields();
+      if (!editingFeedback) {
+        return;
+      }
+
+      const payload = {};
+      const currentLevel1 = editingFeedback.level1_id || null;
+      const currentLevel2 = editingFeedback.level2_id || null;
+      const currentLevel3 = editingFeedback.level3_id || null;
+
+      if (
+        values.sentiment_label &&
+        values.sentiment_label !== editingFeedback.sentiment_label
+      ) {
+        payload.sentiment_label = values.sentiment_label;
+      }
+
+      if (selectedLevel1 !== currentLevel1) {
+        payload.level1_id = selectedLevel1;
+      }
+
+      if (
+        selectedLevel2 !== currentLevel2 ||
+        (selectedLevel1 === null && currentLevel2 !== null) ||
+        (selectedLevel1 && selectedLevel2 === null && currentLevel2 !== null)
+      ) {
+        payload.level2_id = selectedLevel1 ? selectedLevel2 : null;
+      }
+
+      if (
+        selectedLevel3 !== currentLevel3 ||
+        (selectedLevel2 === null && currentLevel3 !== null)
+      ) {
+        payload.level3_id = selectedLevel2 ? selectedLevel3 : null;
+      }
+
+      if (Object.keys(payload).length === 0) {
+        message.info('Không có thay đổi nào để cập nhật.');
+        return;
+      }
+
+      setUpdatingFeedback(true);
+      const updated = await feedbackAPI.updateFeedback(editingFeedback.id, payload);
+      message.success('Cập nhật feedback thành công!');
+      await fetchFeedbacks();
+      if (latestResult && updated?.id === latestResult.id) {
+        setLatestResult(updated);
+      }
+      handleEditCancel();
+    } catch (error) {
+      if (error?.errorFields) {
+        return;
+      }
+      const detail = error.response?.data?.detail || 'Không thể cập nhật feedback';
+      message.error(detail);
+      console.error('Error updating feedback:', error);
+    } finally {
+      setUpdatingFeedback(false);
     }
   };
 
@@ -227,6 +394,16 @@ const FeedbackSentiment = () => {
       width: '18%',
       render: (date) => new Date(date).toLocaleString('vi-VN'),
       sorter: (a, b) => new Date(a.created_at) - new Date(b.created_at),
+    },
+    {
+      title: 'Thao tác',
+      key: 'actions',
+      width: '10%',
+      render: (_, record) => (
+        <Button type="link" onClick={() => handleEdit(record)}>
+          Chỉnh sửa
+        </Button>
+      ),
     },
   ];
 
@@ -410,6 +587,85 @@ const FeedbackSentiment = () => {
           scroll={{ x: 1000 }}
         />
       </Card>
+
+      <Modal
+        title="Chỉnh sửa Feedback"
+        open={editModalVisible}
+        onCancel={handleEditCancel}
+        onOk={handleEditSubmit}
+        confirmLoading={updatingFeedback}
+        okText="Lưu"
+        cancelText="Hủy"
+        destroyOnClose
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item
+            label="Sentiment"
+            name="sentiment_label"
+            rules={[{ required: true, message: 'Vui lòng chọn sentiment' }]}
+          >
+            <Select placeholder="Chọn sentiment">
+              <Option value="POSITIVE">Tích cực</Option>
+              <Option value="NEGATIVE">Tiêu cực</Option>
+              <Option value="EXTREMELY_NEGATIVE">Rất tiêu cực</Option>
+              <Option value="NEUTRAL">Trung tính</Option>
+            </Select>
+          </Form.Item>
+
+          <Divider orientation="left" plain style={{ margin: '8px 0 16px' }}>
+            Intent (Level 1 → Level 2 → Level 3)
+          </Divider>
+
+          <Form.Item label="Level 1" name="level1_id">
+            <Select
+              allowClear
+              placeholder="Chọn Level 1"
+              onChange={handleLevel1Change}
+              loading={labelLoading && labelTree.length === 0}
+            >
+              {labelTree.map((level1) => (
+                <Option key={level1.id} value={level1.id}>
+                  {level1.name}
+                </Option>
+              ))}
+            </Select>
+          </Form.Item>
+
+          <Form.Item label="Level 2" name="level2_id">
+            <Select
+              allowClear
+              placeholder={selectedLevel1 ? 'Chọn Level 2' : 'Chọn Level 1 trước'}
+              onChange={handleLevel2Change}
+              disabled={!selectedLevel1}
+            >
+              {availableLevel2.map((level2) => (
+                <Option key={level2.id} value={level2.id}>
+                  {level2.name}
+                </Option>
+              ))}
+            </Select>
+          </Form.Item>
+
+          <Form.Item label="Level 3" name="level3_id">
+            <Select
+              allowClear
+              placeholder={selectedLevel2 ? 'Chọn Level 3' : 'Chọn Level 2 trước'}
+              onChange={handleLevel3Change}
+              disabled={!selectedLevel2}
+            >
+              {availableLevel3.map((level3) => (
+                <Option key={level3.id} value={level3.id}>
+                  {level3.name}
+                </Option>
+              ))}
+            </Select>
+          </Form.Item>
+
+          <Text type="secondary" style={{ fontSize: '12px' }}>
+            Có thể bỏ trống intent nếu muốn gỡ gán khỏi feedback này.
+          </Text>
+        </Form>
+      </Modal>
     </div>
   );
 };
