@@ -393,8 +393,23 @@ class FeedbackSentimentCRUD:
         )
         
         feedback = row_to_dict(result)
-        logger.info(f"Created feedback sentiment: id={feedback['id']}, label={sentiment_label}, "
-                   f"intent=({level1_id}, {level2_id}, {level3_id})")
+        logger.info(
+            "Created feedback sentiment: id=%s, label=%s, intent=(%s, %s, %s)",
+            feedback["id"],
+            sentiment_label,
+            level1_id,
+            level2_id,
+            level3_id,
+        )
+
+        # Enrich with label names for API response
+        try:
+            full_feedback = FeedbackSentimentCRUD.get_by_id(conn, feedback["id"])
+            if full_feedback:
+                return full_feedback
+        except Exception as exc:  # pragma: no cover - best effort enrichment
+            logger.warning("Failed to enrich feedback %s with label names: %s", feedback["id"], exc)
+        
         return feedback
     
     @staticmethod
@@ -442,8 +457,23 @@ class FeedbackSentimentCRUD:
         where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
         
         query = f"""
-            SELECT id, feedback_text, sentiment_label, confidence_score, feedback_source, created_at
-            FROM feedback_sentiments
+            SELECT 
+                fs.id,
+                fs.feedback_text,
+                fs.sentiment_label,
+                fs.confidence_score,
+                fs.feedback_source,
+                fs.created_at,
+                fs.level1_id,
+                fs.level2_id,
+                fs.level3_id,
+                l1.name AS level1_name,
+                l2.name AS level2_name,
+                l3.name AS level3_name
+            FROM feedback_sentiments fs
+            LEFT JOIN labels l1 ON fs.level1_id = l1.id
+            LEFT JOIN labels l2 ON fs.level2_id = l2.id
+            LEFT JOIN labels l3 ON fs.level3_id = l3.id
             {where_clause}
             ORDER BY created_at DESC
             OFFSET %s LIMIT %s
