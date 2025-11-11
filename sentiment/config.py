@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     
     # Model configuration
     model_path: str = Field(
-        default="/models/sentiments", 
+        default="/models/sentiment-model", 
         description="Path to the sentiment model"
     )
     max_length: int = Field(default=512, description="Maximum sequence length for sentiment model")

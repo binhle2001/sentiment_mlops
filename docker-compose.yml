@@ -33,9 +33,9 @@ services:
     ports:
       - "${SENTIMENT_EXTERNAL_PORT}:${SENTIMENT_PORT}"
     volumes:
-      - ./sentiment-model:/models/sentiments
+      - ./models:/models/sentiments
     environment:
-      SENTIMENT_MODEL_PATH: /models/sentiments https://drive.google.com/file/d/1nueIquv6ddVDM0zwyfoe7k3G91fSBCz_/view?usp=sharing
+      SENTIMENT_MODEL_PATH: /models/sentiments/sentiment-model
     networks:
       - label_network
     healthcheck:
@@ -57,7 +57,7 @@ services:
     ports:
       - "${EMBEDDING_EXTERNAL_PORT:-8003}:8000"
     volumes:
-      - ./bge-m3-finetuned-transformer:/models/embedding
+      - ./models:/models/embedding
     environment:
       EMBEDDING_MODEL_PATH: /models/embedding/vn_embedding_bgem3
       EMBEDDING_PORT: 8000
