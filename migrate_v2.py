@@ -56,19 +56,19 @@ def run_migration(conn):
         
         cursor.execute("""
             ALTER TABLE feedback_sentiments 
-            ADD COLUMN IF NOT EXISTS level1_id UUID
+            ADD COLUMN IF NOT EXISTS level1_id INTEGER
         """)
         print("   ✅ Column 'level1_id' added")
         
         cursor.execute("""
             ALTER TABLE feedback_sentiments 
-            ADD COLUMN IF NOT EXISTS level2_id UUID
+            ADD COLUMN IF NOT EXISTS level2_id INTEGER
         """)
         print("   ✅ Column 'level2_id' added")
         
         cursor.execute("""
             ALTER TABLE feedback_sentiments 
-            ADD COLUMN IF NOT EXISTS level3_id UUID
+            ADD COLUMN IF NOT EXISTS level3_id INTEGER
         """)
         print("   ✅ Column 'level3_id' added")
         

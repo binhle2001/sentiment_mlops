@@ -132,23 +132,6 @@ def init_db():
                 exists = cur.fetchone()[0]
                 
                 if exists:
-                    # Check if id column has default
-                    cur.execute("""
-                        SELECT column_default 
-                        FROM information_schema.columns 
-                        WHERE table_name = 'labels' AND column_name = 'id';
-                    """)
-                    default = cur.fetchone()[0]
-                    
-                    if default is None or 'uuid_generate_v4' not in str(default):
-                        # Add default to id column
-                        logger.info("Adding UUID default to id column...")
-                        cur.execute("""
-                            ALTER TABLE labels 
-                            ALTER COLUMN id SET DEFAULT uuid_generate_v4();
-                        """)
-                        logger.info("UUID default added successfully")
-                    
                     # Check and add default for created_at
                     cur.execute("""
                         SELECT column_default 

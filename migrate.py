@@ -75,9 +75,9 @@ def run_migration(conn):
             CREATE TABLE IF NOT EXISTS feedback_intents (
                 id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                 feedback_id UUID NOT NULL,
-                level1_id UUID NOT NULL,
-                level2_id UUID NOT NULL,
-                level3_id UUID NOT NULL,
+                level1_id INTEGER NOT NULL,
+                level2_id INTEGER NOT NULL,
+                level3_id INTEGER NOT NULL,
                 avg_cosine_similarity REAL NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 

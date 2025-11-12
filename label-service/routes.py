@@ -123,7 +123,7 @@ def create_labels_bulk(bulk_data: BulkLabelCreate):
 )
 def get_labels(
     level: Optional[int] = Query(None, ge=1, le=3, description="Filter by level"),
-    parent_id: Optional[UUID] = Query(None, description="Filter by parent ID"),
+    parent_id: Optional[int] = Query(None, ge=1, description="Filter by parent ID"),
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records"),
 ):
@@ -171,7 +171,7 @@ def get_label_tree():
     response_model=LabelResponse,
     summary="Get label by ID"
 )
-def get_label(label_id: UUID):
+def get_label(label_id: int):
     """Get a specific label by ID."""
     try:
         with get_db() as conn:
@@ -197,7 +197,7 @@ def get_label(label_id: UUID):
     response_model=list[LabelResponse],
     summary="Get children of a label"
 )
-def get_label_children(label_id: UUID):
+def get_label_children(label_id: int):
     """Get all children of a specific label."""
     try:
         with get_db() as conn:
@@ -227,7 +227,7 @@ def get_label_children(label_id: UUID):
     summary="Update a label"
 )
 def update_label(
-    label_id: UUID,
+    label_id: int,
     label_data: LabelUpdate,
 ):
     """Update a label's name or description."""
@@ -255,7 +255,7 @@ def update_label(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a label"
 )
-def delete_label(label_id: UUID):
+def delete_label(label_id: int):
     """Delete a label and all its children (cascade delete)."""
     try:
         with get_db() as conn:
