@@ -174,6 +174,8 @@ def load_feedback_sentiments(
         "level3_id",
     ]
 
+    feedbacks = feedbacks[ordered_columns]
+
     feedbacks = feedbacks.rename(
         columns={
             "level1_id_export": "level1_id",
@@ -183,7 +185,7 @@ def load_feedback_sentiments(
             "level2_id": "original_level2_id",
             "level3_id": "original_level3_id",
         }
-    )[ordered_columns]
+    )
 
     return feedbacks
 
@@ -238,6 +240,8 @@ def load_feedback_intents(
         "level3_id",
     ]
 
+    intents = intents[ordered_columns]
+
     intents = intents.rename(
         columns={
             "level1_id_export": "level1_id",
@@ -247,7 +251,7 @@ def load_feedback_intents(
             "level2_id": "original_level2_id",
             "level3_id": "original_level3_id",
         }
-    )[ordered_columns]
+    )
 
     return intents
 
