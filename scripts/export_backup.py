@@ -124,7 +124,7 @@ def load_labels(conn: psycopg2.extensions.connection) -> pd.DataFrame:
 
 
 def load_feedback_sentiments(
-    conn: psycopg2.extensions.connection, mapping: Dict[int, int]
+    conn: psycopg2.extensions.connection, mapping: Dict[str, int]
 ) -> pd.DataFrame:
     feedbacks = pd.read_sql_query(
         """
@@ -189,7 +189,7 @@ def load_feedback_sentiments(
 
 
 def load_feedback_intents(
-    conn: psycopg2.extensions.connection, mapping: Dict[int, int]
+    conn: psycopg2.extensions.connection, mapping: Dict[str, int]
 ) -> Optional[pd.DataFrame]:
     if not table_exists(conn, "feedback_intents"):
         return None
@@ -298,7 +298,7 @@ def main() -> None:
             return
 
         label_mapping = {
-            int(row.original_id): int(row.id) for row in labels_df.itertuples()
+            row.original_id: row.id for row in labels_df.itertuples()
         }
 
         print("📥 Đang tải dữ liệu feedback_sentiments...")
