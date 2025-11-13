@@ -213,6 +213,7 @@ def init_db():
                             sentiment_label VARCHAR(50) NOT NULL,
                             confidence_score FLOAT NOT NULL,
                             feedback_source VARCHAR(50) NOT NULL,
+                            is_model_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
                             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                         );
                         
@@ -227,6 +228,16 @@ def init_db():
                     logger.info("feedback_sentiments table created successfully")
                 else:
                     logger.info("feedback_sentiments table already exists")
+
+                # Ensure confirmation column exists
+                cur.execute("""
+                    ALTER TABLE feedback_sentiments
+                        ADD COLUMN IF NOT EXISTS is_model_confirmed BOOLEAN NOT NULL DEFAULT FALSE;
+                """)
+                cur.execute("""
+                    COMMENT ON COLUMN feedback_sentiments.is_model_confirmed IS
+                        'Đánh dấu feedback đã được người dùng xác nhận mô hình dự đoán đúng';
+                """)
             
             conn.commit()
     except Exception as e:

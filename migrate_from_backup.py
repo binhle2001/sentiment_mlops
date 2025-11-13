@@ -134,6 +134,7 @@ def recreate_schema(conn: psycopg2.extensions.connection) -> None:
                 sentiment_label VARCHAR(50) NOT NULL,
                 confidence_score REAL NOT NULL,
                 feedback_source VARCHAR(50) NOT NULL,
+                is_model_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 level1_id INTEGER REFERENCES labels(id) ON DELETE SET NULL,
                 level2_id INTEGER REFERENCES labels(id) ON DELETE SET NULL,
@@ -242,9 +243,15 @@ def import_feedback_sentiments(conn: psycopg2.extensions.connection, df: Optiona
         "level2_id",
         "level3_id",
     }
-    missing = required_columns - set(df.columns)
+    available_columns = set(df.columns)
+    missing = required_columns - available_columns
     if missing:
         raise ValueError(f"Sheet 'feedback_sentiments' thiếu cột: {', '.join(sorted(missing))}")
+
+    # Ensure confirmation column exists
+    if "is_model_confirmed" not in available_columns:
+        df = df.copy()
+        df["is_model_confirmed"] = False
 
     records = []
     for row in df.itertuples(index=False):
@@ -254,6 +261,12 @@ def import_feedback_sentiments(conn: psycopg2.extensions.connection, df: Optiona
             if cast_type:
                 return cast_type(value)
             return value
+
+        is_confirmed = getattr(row, "is_model_confirmed")
+        if pd.isna(is_confirmed):
+            is_confirmed = False
+        else:
+            is_confirmed = bool(is_confirmed)
 
         records.append(
             (
@@ -265,6 +278,7 @@ def import_feedback_sentiments(conn: psycopg2.extensions.connection, df: Optiona
                 normalize(getattr(row, "level1_id"), int),
                 normalize(getattr(row, "level2_id"), int),
                 normalize(getattr(row, "level3_id"), int),
+                is_confirmed,
             )
         )
 
@@ -277,9 +291,10 @@ def import_feedback_sentiments(conn: psycopg2.extensions.connection, df: Optiona
             feedback_source,
             level1_id,
             level2_id,
-            level3_id
+            level3_id,
+            is_model_confirmed
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (id) DO UPDATE
             SET feedback_text = EXCLUDED.feedback_text,
                 sentiment_label = EXCLUDED.sentiment_label,
@@ -287,7 +302,8 @@ def import_feedback_sentiments(conn: psycopg2.extensions.connection, df: Optiona
                 feedback_source = EXCLUDED.feedback_source,
                 level1_id = EXCLUDED.level1_id,
                 level2_id = EXCLUDED.level2_id,
-                level3_id = EXCLUDED.level3_id
+                level3_id = EXCLUDED.level3_id,
+                is_model_confirmed = EXCLUDED.is_model_confirmed
     """
 
     with conn.cursor() as cur:

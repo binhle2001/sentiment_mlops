@@ -1,7 +1,7 @@
 """API routes for label management."""
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 import httpx
 
@@ -27,6 +27,9 @@ from schemas import (
     SentimentLabel,
     IntentTriplet,
     FeedbackIntentResponse,
+    LabelSyncRequest,
+    LabelSyncResponse,
+    FeedbackReprocessStatus,
 )
 from config import get_settings
 
@@ -114,6 +117,55 @@ def create_labels_bulk(bulk_data: BulkLabelCreate):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process bulk label creation"
         )
+
+
+@router.post(
+    "/labels/sync",
+    response_model=LabelSyncResponse,
+    summary="Sync labels from external system"
+)
+async def sync_labels(sync_request: LabelSyncRequest):
+    """Đồng bộ label từ hệ thống ngoài và xử lý feedback bị ảnh hưởng."""
+    impacted_feedback_ids: List[UUID] = []
+
+    try:
+        with get_db() as conn:
+            sync_result = LabelCRUD.sync_labels(conn, sync_request.labels)
+            changed_label_ids = sync_result.get("changed_label_ids", [])
+
+            if changed_label_ids:
+                impacted_feedback_ids = FeedbackSentimentCRUD.reset_feedback_for_labels(
+                    conn,
+                    changed_label_ids,
+                )
+                if impacted_feedback_ids:
+                    FeedbackIntentCRUD.delete_by_feedback_ids(conn, impacted_feedback_ids)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc)
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error syncing labels: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to sync labels"
+        )
+
+    reprocess_results = await _reprocess_feedbacks_after_label_update(impacted_feedback_ids)
+
+    return LabelSyncResponse(
+        created=sync_result["created"],
+        updated=sync_result["updated"],
+        unchanged=sync_result["unchanged"],
+        results=sync_result["results"],
+        total=len(sync_request.labels),
+        changed_label_ids=sync_result.get("changed_label_ids", []),
+        impacted_feedbacks=len(impacted_feedback_ids),
+        reprocessed_feedbacks=reprocess_results,
+    )
 
 
 @router.get(
@@ -325,6 +377,177 @@ async def call_embedding_service(text: str) -> list:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get embedding"
         )
+
+
+async def _reprocess_feedbacks_after_label_update(
+    feedback_ids: List[UUID],
+) -> List[dict]:
+    """Re-run intent prediction pipeline for impacted feedbacks."""
+    results: List[dict] = []
+    if not feedback_ids:
+        return results
+
+    try:
+        gemini_service = get_gemini_service()
+    except Exception as exc:  # pragma: no cover - initialization may fail in env
+        logger.error("Gemini service unavailable for reprocess: %s", exc, exc_info=True)
+        gemini_service = None
+
+    for feedback_id in feedback_ids:
+        result = {
+            "feedback_id": feedback_id,
+            "status": FeedbackReprocessStatus.SKIPPED.value,
+            "message": None,
+        }
+
+        try:
+            with get_db() as conn:
+                feedback = FeedbackSentimentCRUD.get_by_id(conn, feedback_id)
+        except Exception as exc:
+            logger.error("Failed to load feedback %s: %s", feedback_id, exc, exc_info=True)
+            result["status"] = FeedbackReprocessStatus.FAILED.value
+            result["message"] = "Không đọc được dữ liệu feedback"
+            results.append(result)
+            continue
+
+        if not feedback:
+            result["status"] = FeedbackReprocessStatus.FAILED.value
+            result["message"] = "Feedback không tồn tại"
+            results.append(result)
+            continue
+
+        try:
+            embedding = await call_embedding_service(feedback["feedback_text"])
+        except HTTPException as exc:
+            logger.error(
+                "Embedding service error (feedback %s): %s",
+                feedback_id,
+                exc.detail,
+            )
+            result["status"] = FeedbackReprocessStatus.FAILED.value
+            result["message"] = f"Lỗi embedding: {exc.detail}"
+            results.append(result)
+            continue
+        except Exception as exc:
+            logger.error(
+                "Unexpected embedding error (feedback %s): %s",
+                feedback_id,
+                exc,
+                exc_info=True,
+            )
+            result["status"] = FeedbackReprocessStatus.FAILED.value
+            result["message"] = "Lỗi bất ngờ khi gọi embedding service"
+            results.append(result)
+            continue
+
+        if not embedding:
+            result["status"] = FeedbackReprocessStatus.SKIPPED.value
+            result["message"] = "Embedding rỗng"
+            results.append(result)
+            continue
+
+        try:
+            with get_db() as conn:
+                intent_candidates = FeedbackIntentCRUD.get_top_intents(
+                    conn,
+                    embedding,
+                    limit=10,
+                    top_level1=5,
+                    top_level2_total=15,
+                    top_level3_total=50,
+                )
+        except Exception as exc:
+            logger.error(
+                "Failed to compute intent candidates (feedback %s): %s",
+                feedback_id,
+                exc,
+                exc_info=True,
+            )
+            result["status"] = FeedbackReprocessStatus.FAILED.value
+            result["message"] = "Không tính được intent candidates"
+            results.append(result)
+            continue
+
+        if not intent_candidates:
+            result["status"] = FeedbackReprocessStatus.SKIPPED.value
+            result["message"] = "Không tìm thấy intent phù hợp"
+            results.append(result)
+            continue
+
+        selected_intent = None
+        if gemini_service:
+            try:
+                selected_intent = gemini_service.select_best_intent(
+                    feedback["feedback_text"],
+                    intent_candidates
+                )
+            except Exception as exc:  # pragma: no cover - external dependency
+                logger.error(
+                    "Gemini selection error (feedback %s): %s",
+                    feedback_id,
+                    exc,
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Gemini service unavailable; skipping intent selection for feedback %s",
+                feedback_id,
+            )
+
+        if not selected_intent:
+            result["status"] = FeedbackReprocessStatus.SKIPPED.value
+            result["message"] = "Gemini không chọn được intent"
+            results.append(result)
+            continue
+
+        update_payload = FeedbackSentimentUpdate(
+            level1_id=selected_intent["level1"]["id"],
+            level2_id=selected_intent["level2"]["id"],
+            level3_id=selected_intent["level3"]["id"],
+            is_model_confirmed=False,
+        )
+
+        try:
+            with get_db() as conn:
+                updated_feedback = FeedbackSentimentCRUD.update(conn, feedback_id, update_payload)
+        except ValueError as exc:
+            result["status"] = FeedbackReprocessStatus.FAILED.value
+            result["message"] = str(exc)
+            results.append(result)
+            continue
+        except Exception as exc:
+            logger.error(
+                "Failed to update feedback %s after reprocess: %s",
+                feedback_id,
+                exc,
+                exc_info=True,
+            )
+            result["status"] = FeedbackReprocessStatus.FAILED.value
+            result["message"] = "Không cập nhật được feedback"
+            results.append(result)
+            continue
+
+        if not updated_feedback:
+            result["status"] = FeedbackReprocessStatus.FAILED.value
+            result["message"] = "Feedback không tồn tại khi cập nhật"
+            results.append(result)
+            continue
+
+        result["status"] = FeedbackReprocessStatus.UPDATED.value
+        result["message"] = (
+            f"Intent mới: {selected_intent['level1']['name']} → "
+            f"{selected_intent['level2']['name']} → {selected_intent['level3']['name']}"
+        )
+        logger.info(
+            "Reprocessed feedback %s with new intent (%s, %s, %s)",
+            feedback_id,
+            selected_intent["level1"]["id"],
+            selected_intent["level2"]["id"],
+            selected_intent["level3"]["id"],
+        )
+        results.append(result)
+
+    return results
 
 
 @router.post(

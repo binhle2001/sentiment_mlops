@@ -1,6 +1,6 @@
 """CRUD operations with raw SQL queries."""
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from uuid import UUID
 from datetime import datetime
 
@@ -9,6 +9,8 @@ from schemas import (
     LabelUpdate,
     FeedbackSentimentCreate,
     FeedbackSentimentUpdate,
+    LabelSyncItem,
+    LabelSyncResultStatus,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,60 @@ class LabelCRUD:
             fetch="one",
         )
         return int(result["next_id"]) if result and result.get("next_id") is not None else 1
+
+    @staticmethod
+    def _validate_parent_for_sync(conn, label_id: int, level: int, parent_id: Optional[int]) -> None:
+        """Ensure parent relationship is valid when syncing labels."""
+        if level == 1:
+            if parent_id is not None:
+                raise ValueError("Level 1 labels cannot have a parent")
+            return
+
+        if parent_id is None:
+            raise ValueError(f"Level {level} labels must have a parent")
+
+        if parent_id == label_id:
+            raise ValueError("Label cannot reference itself as parent")
+
+        parent = LabelCRUD.get_by_id(conn, parent_id)
+        if not parent:
+            raise ValueError(f"Parent label with id {parent_id} not found")
+
+        expected_level = level - 1
+        if parent["level"] != expected_level:
+            raise ValueError(
+                f"Invalid hierarchy: label level {level} must have parent at level {expected_level}"
+            )
+
+    @staticmethod
+    def _update_from_sync(conn, label_data: "LabelSyncItem") -> Dict[str, Any]:
+        """Update label record with full payload coming from sync."""
+        from database import execute_query
+
+        query = """
+            UPDATE labels
+            SET name = %s,
+                level = %s,
+                parent_id = %s,
+                description = %s
+            WHERE id = %s
+            RETURNING id, name, level, parent_id, description, created_at, updated_at
+        """
+        result = execute_query(
+            conn,
+            query,
+            (
+                label_data.name,
+                label_data.level,
+                label_data.parent_id,
+                label_data.description,
+                label_data.id,
+            ),
+            fetch="one",
+        )
+        if result is None:
+            raise ValueError(f"Failed to update label with id {label_data.id}")
+        return row_to_dict(result)
 
     @staticmethod
     def create(conn, label_data: LabelCreate) -> Dict[str, Any]:
@@ -332,6 +388,87 @@ class LabelCRUD:
         return results
     
     @staticmethod
+    def sync_labels(conn, labels_data: List["LabelSyncItem"]) -> Dict[str, Any]:
+        """Synchronize labels coming from external systems."""
+        if not labels_data:
+            return {
+                "created": 0,
+                "updated": 0,
+                "unchanged": 0,
+                "results": [],
+                "changed_label_ids": [],
+            }
+
+        created = 0
+        updated = 0
+        unchanged = 0
+        changed_label_ids: Set[int] = set()
+        result_map: Dict[int, Dict[str, Any]] = {}
+
+        # Sort by level to ensure parents are processed before children
+        sorted_labels = sorted(labels_data, key=lambda item: (item.level, item.id))
+
+        for item in sorted_labels:
+            # Ensure hierarchy is valid before applying changes
+            LabelCRUD._validate_parent_for_sync(conn, item.id, item.level, item.parent_id)
+
+            existing = LabelCRUD.get_by_id(conn, item.id)
+            if not existing:
+                payload = LabelCreate(**item.model_dump(exclude={"updated_at"}))
+                label = LabelCRUD.create(conn, payload)
+                created += 1
+
+                result_map[item.id] = {
+                    "id": label["id"],
+                    "status": LabelSyncResultStatus.CREATED,
+                    "changes": ["name", "level", "parent_id", "description"],
+                    "message": "Created new label from sync",
+                }
+                continue
+
+            # Determine changed fields
+            changes: List[str] = []
+            for field in ("name", "level", "parent_id", "description"):
+                if existing.get(field) != getattr(item, field):
+                    changes.append(field)
+
+            if not changes:
+                unchanged += 1
+                result_map[item.id] = {
+                    "id": existing["id"],
+                    "status": LabelSyncResultStatus.UNCHANGED,
+                    "changes": None,
+                    "message": "No changes detected",
+                }
+                continue
+
+            updated_label = LabelCRUD._update_from_sync(conn, item)
+            updated += 1
+            changed_label_ids.add(item.id)
+
+            result_map[item.id] = {
+                "id": updated_label["id"],
+                "status": LabelSyncResultStatus.UPDATED,
+                "changes": changes,
+                "message": "Label updated from sync",
+            }
+            logger.info(
+                "Synced label %s: updated fields=%s",
+                updated_label["id"],
+                ", ".join(changes),
+            )
+
+        ordered_results = [result_map[item.id] for item in labels_data]
+
+        return {
+            "created": created,
+            "updated": updated,
+            "unchanged": unchanged,
+            "results": ordered_results,
+            "changed_label_ids": list(changed_label_ids),
+        }
+    
+    @staticmethod
     def update_embedding(conn, label_id: int, embedding_vector: list) -> bool:
         """Update embedding vector for a label."""
         query = """
@@ -389,8 +526,8 @@ class FeedbackSentimentCRUD:
                 level1_id, level2_id, level3_id
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, feedback_text, sentiment_label, confidence_score, feedback_source, 
-                      level1_id, level2_id, level3_id, created_at
+            RETURNING id, feedback_text, sentiment_label, confidence_score, feedback_source,
+                      is_model_confirmed, level1_id, level2_id, level3_id, created_at
         """
         
         from database import execute_query
@@ -508,6 +645,12 @@ class FeedbackSentimentCRUD:
             update_fields.append("sentiment_label = %s")
             params.append(sentiment_label)
 
+        if "is_model_confirmed" in update_payload:
+            is_confirmed = update_payload["is_model_confirmed"]
+            if is_confirmed is not None and is_confirmed != existing.get("is_model_confirmed"):
+                update_fields.append("is_model_confirmed = %s")
+                params.append(is_confirmed)
+
         if new_level1_id != existing.get("level1_id"):
             update_fields.append("level1_id = %s")
             params.append(new_level1_id)
@@ -551,7 +694,7 @@ class FeedbackSentimentCRUD:
         query = """
             SELECT 
                 fs.id, fs.feedback_text, fs.sentiment_label, fs.confidence_score, 
-                fs.feedback_source, fs.created_at,
+                fs.feedback_source, fs.is_model_confirmed, fs.created_at,
                 fs.level1_id, fs.level2_id, fs.level3_id,
                 l1.name as level1_name,
                 l2.name as level2_name,
@@ -596,6 +739,7 @@ class FeedbackSentimentCRUD:
                 fs.sentiment_label,
                 fs.confidence_score,
                 fs.feedback_source,
+                fs.is_model_confirmed,
                 fs.created_at,
                 fs.level1_id,
                 fs.level2_id,
@@ -646,6 +790,51 @@ class FeedbackSentimentCRUD:
         from database import execute_query
         result = execute_query(conn, query, tuple(params) if params else None, fetch="one")
         return result['count'] if result else 0
+
+    @staticmethod
+    def reset_feedback_for_labels(conn, label_ids: List[int]) -> List[UUID]:
+        """Clear label assignments and confirmation flags for affected feedbacks."""
+        if not label_ids:
+            return []
+
+        unique_label_ids = sorted({int(label_id) for label_id in label_ids})
+        from database import execute_query
+
+        query = """
+            UPDATE feedback_sentiments
+            SET
+                level1_id = CASE WHEN level1_id = ANY(%s) THEN NULL ELSE level1_id END,
+                level2_id = CASE WHEN level2_id = ANY(%s) THEN NULL ELSE level2_id END,
+                level3_id = CASE WHEN level3_id = ANY(%s) THEN NULL ELSE level3_id END,
+                is_model_confirmed = FALSE
+            WHERE level1_id = ANY(%s)
+               OR level2_id = ANY(%s)
+               OR level3_id = ANY(%s)
+            RETURNING id
+        """
+
+        results = execute_query(
+            conn,
+            query,
+            (
+                unique_label_ids,
+                unique_label_ids,
+                unique_label_ids,
+                unique_label_ids,
+                unique_label_ids,
+                unique_label_ids,
+            ),
+            fetch="all",
+        )
+
+        feedback_ids = [row["id"] for row in results] if results else []
+        if feedback_ids:
+            logger.info(
+                "Reset %s feedback(s) due to label changes: labels=%s",
+                len(feedback_ids),
+                unique_label_ids,
+            )
+        return feedback_ids
 
 
 class FeedbackIntentCRUD:
@@ -816,3 +1005,28 @@ class FeedbackIntentCRUD:
         
         return final_triplets
     
+    @staticmethod
+    def delete_by_feedback_ids(conn, feedback_ids: List[UUID]) -> int:
+        """Delete cached intents associated with provided feedback IDs."""
+        if not feedback_ids:
+            return 0
+
+        unique_ids = list({str(feedback_id) for feedback_id in feedback_ids})
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM feedback_intents
+                WHERE feedback_id = ANY(%s)
+                """,
+                (unique_ids,),
+            )
+            deleted = cur.rowcount
+
+        if deleted:
+            logger.info(
+                "Deleted %s cached intent(s) for feedbacks: %s",
+                deleted,
+                unique_ids,
+            )
+        return deleted

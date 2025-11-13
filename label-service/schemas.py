@@ -4,7 +4,7 @@ from typing import Optional, List
 from uuid import UUID
 from enum import Enum
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ValidationInfo
 
 
 class LabelBase(BaseModel):
@@ -14,17 +14,19 @@ class LabelBase(BaseModel):
     parent_id: Optional[int] = Field(None, ge=1, description="Parent label ID")
     description: Optional[str] = Field(None, description="Label description")
     
-    @validator('level')
-    def validate_level(cls, v):
+    @field_validator('level')
+    @classmethod
+    def validate_level(cls, v: int) -> int:
         """Validate level is 1, 2, or 3."""
         if v not in [1, 2, 3]:
             raise ValueError("Level must be 1, 2, or 3")
         return v
     
-    @validator('parent_id', always=True)
-    def validate_parent_for_level(cls, v, values):
+    @field_validator('parent_id')
+    @classmethod
+    def validate_parent_for_level(cls, v: Optional[int], info: ValidationInfo) -> Optional[int]:
         """Validate parent_id based on level."""
-        level = values.get('level')
+        level = info.data.get('level') if info.data else None
         if level == 1 and v is not None:
             raise ValueError("Level 1 labels cannot have a parent")
         if level in [2, 3] and v is None:
@@ -146,6 +148,10 @@ class FeedbackSentimentUpdate(BaseModel):
         default=None,
         description="Updated sentiment label",
     )
+    is_model_confirmed: Optional[bool] = Field(
+        default=None,
+        description="Đánh dấu feedback đã được người dùng xác nhận mô hình đúng",
+    )
     level1_id: Optional[int] = Field(
         default=None,
         description="Selected level 1 label ID (or null to clear intent)",
@@ -171,6 +177,10 @@ class FeedbackSentimentResponse(BaseModel):
     level1_id: Optional[int] = None
     level2_id: Optional[int] = None
     level3_id: Optional[int] = None
+    is_model_confirmed: bool = Field(
+        default=False,
+        description="Feedback đã được người dùng xác nhận mô hình đúng hay chưa",
+    )
     level1_name: Optional[str] = None
     level2_name: Optional[str] = None
     level3_name: Optional[str] = None
@@ -209,5 +219,76 @@ class FeedbackIntentResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+
+# --- Label Sync Schemas ---
+
+class LabelSyncItem(LabelBase):
+    """Payload of a label record to sync from external service."""
+    id: int = Field(..., ge=1, description="Unique label ID from source system")
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        description="Timestamp của bản ghi nguồn (nếu có) để phục vụ logging"
+    )
+
+
+class LabelSyncRequest(BaseModel):
+    """Request schema cho API đồng bộ label."""
+    labels: List[LabelSyncItem] = Field(
+        ...,
+        min_items=1,
+        description="Danh sách label cần đồng bộ",
+    )
+
+
+class LabelSyncResultStatus(str, Enum):
+    CREATED = "created"
+    UPDATED = "updated"
+    UNCHANGED = "unchanged"
+
+
+class FeedbackReprocessStatus(str, Enum):
+    UPDATED = "updated"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class FeedbackReprocessResult(BaseModel):
+    """Kết quả tái dự đoán cho từng feedback bị ảnh hưởng."""
+    feedback_id: UUID
+    status: FeedbackReprocessStatus
+    message: Optional[str] = None
+
+
+class LabelSyncResult(BaseModel):
+    """Kết quả cho từng label sau khi đồng bộ."""
+    id: int
+    status: LabelSyncResultStatus
+    changes: Optional[List[str]] = Field(
+        default=None,
+        description="Danh sách field đã thay đổi (nếu có)"
+    )
+    message: Optional[str] = None
+
+
+class LabelSyncResponse(BaseModel):
+    """Phản hồi API đồng bộ label."""
+    created: int
+    updated: int
+    unchanged: int
+    results: List[LabelSyncResult]
+    total: int = Field(..., description="Tổng số bản ghi đã xử lý")
+    changed_label_ids: List[int] = Field(
+        default_factory=list,
+        description="Danh sách label đã được cập nhật (ảnh hưởng tới feedback)",
+    )
+    impacted_feedbacks: int = Field(
+        default=0,
+        description="Số feedback bị reset lại do thay đổi label",
+    )
+    reprocessed_feedbacks: List[FeedbackReprocessResult] = Field(
+        default_factory=list,
+        description="Chi tiết kết quả tái dự đoán cho feedback bị ảnh hưởng",
+    )
 
 
