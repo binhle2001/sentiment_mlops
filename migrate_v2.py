@@ -17,11 +17,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Database configuration
-DB_HOST = os.getenv('POSTGRES_HOST', 'localhost')
-DB_PORT = int(os.getenv('POSTGRES_PORT', '5432'))
-DB_NAME = os.getenv('POSTGRES_DB', 'label_db')
-DB_USER = os.getenv('POSTGRES_USER', 'postgres')
-DB_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'password')
+DB_HOST = 'localhost'
+DB_PORT = 5499
+DB_NAME = 'label_db'
+DB_USER =  'postgres'
+DB_PASSWORD = 'qwertyxxx'
 
 
 def get_connection():
