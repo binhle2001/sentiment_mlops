@@ -76,9 +76,7 @@ def load_labels(conn: psycopg2.extensions.connection) -> pd.DataFrame:
             name,
             level,
             parent_id,
-            description,
-            created_at,
-            updated_at
+            description
         FROM labels
         ORDER BY level ASC, parent_id ASC NULLS FIRST, name ASC, id ASC
         """,
@@ -106,8 +104,6 @@ def load_labels(conn: psycopg2.extensions.connection) -> pd.DataFrame:
         "description",
         "id",
         "parent_id",
-        "created_at",
-        "updated_at",
     ]
     labels = labels[ordered_columns]
 
@@ -134,7 +130,6 @@ def load_feedback_sentiments(
             fs.sentiment_label,
             fs.confidence_score,
             fs.feedback_source,
-            fs.created_at,
             fs.level1_id,
             fs.level2_id,
             fs.level3_id,
@@ -162,7 +157,6 @@ def load_feedback_sentiments(
         "sentiment_label",
         "confidence_score",
         "feedback_source",
-        "created_at",
         "level1_id_export",
         "level1_name",
         "level2_id_export",
@@ -205,7 +199,6 @@ def load_feedback_intents(
             fi.level2_id,
             fi.level3_id,
             fi.avg_cosine_similarity,
-            fi.created_at,
             l1.name AS level1_name,
             l2.name AS level2_name,
             l3.name AS level3_name
@@ -228,7 +221,6 @@ def load_feedback_intents(
         "id",
         "feedback_id",
         "avg_cosine_similarity",
-        "created_at",
         "level1_id_export",
         "level1_name",
         "level2_id_export",
