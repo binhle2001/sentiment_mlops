@@ -350,6 +350,25 @@ ORDER BY count DESC
 LIMIT 10;
 ```
 
+## Trigger Huấn Luyện Tự Động (Intent & Sentiment)
+
+- Bật/tắt bằng biến môi trường `ENABLE_TRAINING_TRIGGER` (mặc định bật).
+- Sau khi người dùng xác nhận (`is_model_confirmed=True`) hoặc chỉnh sửa intent/sentiment, backend đếm số lần `confirmed`/`relabel`.
+- Điều kiện kích hoạt (mặc định): `confirmed > 200` và `relabel > 30`, đồng thời không có sự kiện mới trong 60 giây (`TRAINING_IDLE_SECONDS`).
+- Mỗi model (intent hoặc sentiment) sẽ lần lượt chiếm biến trigger; model còn lại phải chờ tới lượt.
+- URL mặc định:
+  - Sentiment training: `http://sentiment-training-service:8010/api/v1/train`
+  - Intent (embedding) training: `http://embedding-training-service:8001/api/train`
+- API giám sát: `GET /api/v1/training/status` trả về `current_trigger` và bộ đếm hiện tại.
+
+### Gợi ý kiểm thử thủ công
+
+1. Chạy `docker-compose up label-backend sentiment-training-service embedding-training-service`.
+2. Tạo feedback, chỉnh sửa intent vài lần → gọi `/api/v1/training/status` để xem bộ đếm tăng.
+3. Xác nhận feedback (`POST /api/v1/feedbacks/{id}/confirm`) nhiều lần cho tới khi vượt ngưỡng, chờ 60 giây → backend sẽ gọi service train tương ứng (xem log).
+4. Thử thay đổi `sentiment_label` để quan sát trigger huấn luyện sentiment.
+5. Khi dừng service (`docker-compose down`), kiểm tra log đảm bảo TrainingManager shutdown gọn.
+
 ## Tài Liệu Tham Khảo
 
 - **BGE-M3 Model**: Embedding model được sử dụng (1024 dimensions)

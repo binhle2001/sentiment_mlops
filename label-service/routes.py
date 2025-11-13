@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from uuid import UUID
 import httpx
 
@@ -38,11 +38,51 @@ from schemas import (
     FeedbackImportResponse,
 )
 from config import get_settings
+from training_manager import get_training_manager
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 router = APIRouter()
+
+
+def _notify_training_manager(existing: Optional[Dict[str, Any]], updated: Dict[str, Any]) -> None:
+    try:
+        manager = get_training_manager()
+    except RuntimeError:
+        logger.debug("Training manager not initialized yet; skip trigger notification.")
+        return
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Unexpected error acquiring training manager: %s", exc)
+        return
+
+    if not updated:
+        return
+
+    confirmed_before = bool(existing and existing.get("is_model_confirmed"))
+    confirmed_after = bool(updated.get("is_model_confirmed"))
+    if confirmed_after and not confirmed_before:
+        manager.record_confirm("intent", updated)
+        manager.record_confirm("sentiment", updated)
+
+    sentiment_changed = (
+        existing is not None
+        and existing.get("sentiment_label") != updated.get("sentiment_label")
+    )
+    if sentiment_changed:
+        manager.record_relabel("sentiment", updated)
+
+    intent_changed = False
+    if existing is not None:
+        intent_changed = any(
+            existing.get(key) != updated.get(key)
+            for key in ("level1_id", "level2_id", "level3_id")
+        )
+    else:
+        intent_changed = updated.get("level3_id") is not None
+
+    if intent_changed:
+        manager.record_relabel("intent", updated)
 
 
 @router.get("/health", response_model=HealthResponse, summary="Health check endpoint")
@@ -54,6 +94,22 @@ def health_check():
         database="ok",
         version=settings.app_version
     )
+
+
+@router.get(
+    "/training/status",
+    summary="Kiểm tra trạng thái trigger huấn luyện"
+)
+async def training_status():
+    try:
+        manager = get_training_manager()
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Training manager chưa được khởi tạo"
+        )
+    status_payload = await manager.get_status()
+    return status_payload
 
 
 @router.post(
@@ -539,6 +595,16 @@ async def _reprocess_feedbacks_after_label_update(
             results.append(result)
             continue
 
+        try:
+            manager = get_training_manager()
+        except RuntimeError:
+            manager = None
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Không lấy được training manager: %s", exc)
+            manager = None
+        if manager:
+            await manager.record_relabel_async("intent", updated_feedback)
+
         result["status"] = FeedbackReprocessStatus.UPDATED.value
         result["message"] = (
             f"Intent mới: {selected_intent['level1']['name']} → "
@@ -667,13 +733,15 @@ def update_feedback_sentiment(feedback_id: UUID, update_data: FeedbackSentimentU
     """Manually update sentiment label and/or intent hierarchy for an existing feedback."""
     try:
         with get_db() as conn:
+            existing = FeedbackSentimentCRUD.get_by_id(conn, feedback_id)
             updated_feedback = FeedbackSentimentCRUD.update(conn, feedback_id, update_data)
             if not updated_feedback:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Feedback with id {feedback_id} not found"
                 )
-            return updated_feedback
+        _notify_training_manager(existing, updated_feedback)
+        return updated_feedback
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -698,6 +766,7 @@ def confirm_feedback_sentiment(feedback_id: UUID):
     """Đánh dấu feedback đã được người dùng xác nhận mô hình dự đoán đúng."""
     try:
         with get_db() as conn:
+            existing = FeedbackSentimentCRUD.get_by_id(conn, feedback_id)
             payload = FeedbackSentimentUpdate(is_model_confirmed=True)
             updated_feedback = FeedbackSentimentCRUD.update(conn, feedback_id, payload)
             if not updated_feedback:
@@ -705,7 +774,8 @@ def confirm_feedback_sentiment(feedback_id: UUID):
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Feedback with id {feedback_id} not found"
                 )
-            return updated_feedback
+        _notify_training_manager(existing, updated_feedback)
+        return updated_feedback
     except HTTPException:
         raise
     except Exception as e:

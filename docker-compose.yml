@@ -101,6 +101,32 @@ services:
     env_file:
       - .env
 
+  # Embedding Training Service
+  embedding-training-service:
+    build:
+      context: ./embedding-training
+      dockerfile: Dockerfile
+    container_name: embedding_training_service
+    restart: unless-stopped
+    ports:
+      - "${EMBEDDING_TRAINING_EXTERNAL_PORT:-8005}:8001"
+    volumes:
+      - ./models:/app/models
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      OUTPUT_DIR: /app/models/bge-m3-finetuned-transformer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - label_network
+    env_file:
+      - .env
+
   # Label Management Backend Service
   label-backend:
     build:

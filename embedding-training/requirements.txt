@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+psycopg2-binary
+transformers
+torch
+optimum[onnxruntime]
+pydantic
+pydantic-settings

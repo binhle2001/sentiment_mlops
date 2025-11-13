@@ -43,11 +43,49 @@ class Settings(BaseSettings):
         default="http://sentiment-service:8005/api/v1",
         description="URL of the sentiment analysis service"
     )
+    sentiment_training_service_url: str = Field(
+        default="http://sentiment-training-service:8010/api/v1/train",
+        description="URL của service huấn luyện sentiment"
+    )
     
     # Embedding Service settings
     embedding_service_url: str = Field(
         default="http://embedding-service:8000/api/v1",
         description="URL of the embedding service"
+    )
+    intent_training_service_url: str = Field(
+        default="http://embedding-training-service:8001/api/train",
+        description="URL của service huấn luyện intent (embedding fine-tuning)"
+    )
+
+    # Training trigger configuration
+    enable_training_trigger: bool = Field(
+        default=True,
+        description="Bật/tắt cơ chế tự động trigger huấn luyện"
+    )
+    training_idle_seconds: int = Field(
+        default=60,
+        description="Thời gian im lặng tối thiểu trước khi kích hoạt huấn luyện (giây)"
+    )
+    training_check_interval_seconds: int = Field(
+        default=5,
+        description="Khoảng thời gian kiểm tra trigger (giây)"
+    )
+    intent_confirm_threshold: int = Field(
+        default=200,
+        description="Ngưỡng confirm cho intent trước khi trigger train"
+    )
+    intent_relabel_threshold: int = Field(
+        default=30,
+        description="Ngưỡng relabel cho intent trước khi trigger train"
+    )
+    sentiment_confirm_threshold: int = Field(
+        default=200,
+        description="Ngưỡng confirm cho sentiment trước khi trigger train"
+    )
+    sentiment_relabel_threshold: int = Field(
+        default=30,
+        description="Ngưỡng relabel cho sentiment trước khi trigger train"
     )
     
     # Gemini AI settings
