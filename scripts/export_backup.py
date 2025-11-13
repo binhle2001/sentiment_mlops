@@ -80,7 +80,7 @@ def load_labels(conn: psycopg2.extensions.connection) -> pd.DataFrame:
             created_at,
             updated_at
         FROM labels
-        ORDER BY level ASC, COALESCE(parent_id, 0) ASC, name ASC, id ASC
+        ORDER BY level ASC, parent_id ASC NULLS FIRST, name ASC, id ASC
         """,
         conn,
     )
@@ -97,7 +97,6 @@ def load_labels(conn: psycopg2.extensions.connection) -> pd.DataFrame:
 
     # Convert to pandas nullable Int for consistent Excel output (allows NaN)
     labels["parent_id_export"] = labels["parent_id_export"].astype("Int64")
-    labels["parent_id"] = labels["parent_id"].astype("Int64")
 
     ordered_columns = [
         "id_export",
@@ -155,7 +154,6 @@ def load_feedback_sentiments(
 
     for col in ("level1_id", "level2_id", "level3_id"):
         feedbacks[f"{col}_export"] = feedbacks[col].map(mapping).astype("Int64")
-        feedbacks[col] = feedbacks[col].astype("Int64")
 
     ordered_columns = [
         "id",
@@ -222,7 +220,6 @@ def load_feedback_intents(
 
     for col in ("level1_id", "level2_id", "level3_id"):
         intents[f"{col}_export"] = intents[col].map(mapping).astype("Int64")
-        intents[col] = intents[col].astype("Int64")
 
     ordered_columns = [
         "id",
