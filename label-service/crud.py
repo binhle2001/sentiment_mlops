@@ -517,15 +517,16 @@ class FeedbackSentimentCRUD:
         confidence_score: float,
         level1_id: Optional[int] = None,
         level2_id: Optional[int] = None,
-        level3_id: Optional[int] = None
+        level3_id: Optional[int] = None,
+        is_model_confirmed: bool = False,
     ) -> Dict[str, Any]:
         """Create a new feedback sentiment record with optional intent labels."""
         query = """
             INSERT INTO feedback_sentiments (
                 feedback_text, sentiment_label, confidence_score, feedback_source,
-                level1_id, level2_id, level3_id
+                level1_id, level2_id, level3_id, is_model_confirmed
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, feedback_text, sentiment_label, confidence_score, feedback_source,
                       is_model_confirmed, level1_id, level2_id, level3_id, created_at
         """
@@ -543,6 +544,7 @@ class FeedbackSentimentCRUD:
                 level1_id,
                 level2_id,
                 level3_id,
+                is_model_confirmed,
             ),
             fetch="one"
         )
@@ -641,15 +643,22 @@ class FeedbackSentimentCRUD:
         update_fields = []
         params = []
 
+        sentiment_changed = False
         if sentiment_label is not None and sentiment_label != existing.get("sentiment_label"):
             update_fields.append("sentiment_label = %s")
             params.append(sentiment_label)
+            sentiment_changed = True
 
         if "is_model_confirmed" in update_payload:
             is_confirmed = update_payload["is_model_confirmed"]
             if is_confirmed is not None and is_confirmed != existing.get("is_model_confirmed"):
                 update_fields.append("is_model_confirmed = %s")
                 params.append(is_confirmed)
+
+        level1_changed = new_level1_id != existing.get("level1_id")
+        level2_changed = new_level2_id != existing.get("level2_id")
+        level3_changed = new_level3_id != existing.get("level3_id")
+        level_changed = level1_changed or level2_changed or level3_changed
 
         if new_level1_id != existing.get("level1_id"):
             update_fields.append("level1_id = %s")
@@ -662,6 +671,16 @@ class FeedbackSentimentCRUD:
         if new_level3_id != existing.get("level3_id"):
             update_fields.append("level3_id = %s")
             params.append(new_level3_id)
+
+        should_reset_confirmation = (
+            "is_model_confirmed" not in update_payload
+            and (sentiment_changed or level_changed)
+            and existing.get("is_model_confirmed")
+        )
+
+        if should_reset_confirmation:
+            update_fields.append("is_model_confirmed = %s")
+            params.append(False)
 
         if not update_fields:
             logger.info("No changes detected for feedback %s; skipping update", feedback_id)

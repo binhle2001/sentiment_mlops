@@ -104,6 +104,20 @@ export const feedbackAPI = {
   updateFeedback: (id, payload) => {
     return api.put(`/feedbacks/${id}`, payload);
   },
+
+  // Confirm model prediction for a feedback
+  confirmFeedback: (id) => {
+    return api.post(`/feedbacks/${id}/confirm`);
+  },
+
+  // Import feedbacks from Excel
+  importFeedbacks: (formData) => {
+    return api.post('/feedbacks/import', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  },
 };
 
 export default api;

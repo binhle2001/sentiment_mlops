@@ -9,6 +9,7 @@ import {
   Table,
   Tag,
   Space,
+  Upload,
   message,
   Typography,
   Row,
@@ -23,6 +24,8 @@ import {
   WarningOutlined,
   SendOutlined,
   ReloadOutlined,
+  CheckOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import { feedbackAPI, labelAPI } from '../services/api';
 
@@ -50,6 +53,8 @@ const FeedbackSentiment = () => {
   const [selectedLevel3, setSelectedLevel3] = useState(null);
   const [updatingFeedback, setUpdatingFeedback] = useState(false);
   const [labelLoading, setLabelLoading] = useState(false);
+  const [confirmingId, setConfirmingId] = useState(null);
+  const [importing, setImporting] = useState(false);
 
   const loadLabelTree = async () => {
     try {
@@ -123,6 +128,29 @@ const FeedbackSentiment = () => {
     });
 
     setEditModalVisible(true);
+  };
+
+  const handleConfirm = async (record) => {
+    if (!record?.id) {
+      return;
+    }
+    setConfirmingId(record.id);
+    try {
+      const updated = await feedbackAPI.confirmFeedback(record.id);
+      message.success('Đã xác nhận feedback!');
+      setFeedbacks((prev) =>
+        prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item))
+      );
+      if (latestResult && updated?.id === latestResult.id) {
+        setLatestResult(updated);
+      }
+    } catch (error) {
+      const detail = error?.response?.data?.detail || 'Không thể xác nhận feedback';
+      message.error(detail);
+      console.error('Error confirming feedback:', error);
+    } finally {
+      setConfirmingId(null);
+    }
   };
 
   const handleLevel1Change = (value) => {
@@ -228,6 +256,43 @@ const FeedbackSentiment = () => {
     } finally {
       setUpdatingFeedback(false);
     }
+  };
+
+  const handleImportExcel = async (file) => {
+    if (!file) {
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      setImporting(true);
+      const result = await feedbackAPI.importFeedbacks(formData);
+      message.success(`Đã import ${result.imported} feedback thành công.`);
+      if (result.failed > 0) {
+        const warningMessage = result.log_file
+          ? `Có ${result.failed} dòng lỗi. Xem log tại ${result.log_file}`
+          : `Có ${result.failed} dòng lỗi.`;
+        message.warning(warningMessage);
+      }
+      await fetchFeedbacks();
+    } catch (error) {
+      const detail = error?.response?.data?.detail || 'Không thể import dữ liệu feedback';
+      message.error(detail);
+      console.error('Error importing feedbacks:', error);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const uploadProps = {
+    accept: '.xlsx',
+    showUploadList: false,
+    beforeUpload: (file) => {
+      handleImportExcel(file);
+      return false;
+    },
   };
 
   const handleSubmit = async (values) => {
@@ -396,14 +461,38 @@ const FeedbackSentiment = () => {
       sorter: (a, b) => new Date(a.created_at) - new Date(b.created_at),
     },
     {
+      title: 'Xác nhận',
+      dataIndex: 'is_model_confirmed',
+      key: 'is_model_confirmed',
+      width: '10%',
+      render: (value) => (
+        <Tag color={value ? 'green' : 'default'}>{value ? 'Đã xác nhận' : 'Chưa'}</Tag>
+      ),
+    },
+    {
       title: 'Thao tác',
       key: 'actions',
-      width: '10%',
-      render: (_, record) => (
-        <Button type="link" onClick={() => handleEdit(record)}>
-          Chỉnh sửa
-        </Button>
-      ),
+      width: '14%',
+      render: (_, record) => {
+        const canConfirm = !!record.level1_id && !record.is_model_confirmed;
+        return (
+          <Space>
+            {canConfirm && (
+              <Button
+                type="link"
+                icon={<CheckOutlined />}
+                onClick={() => handleConfirm(record)}
+                loading={confirmingId === record.id}
+              >
+                Xác nhận
+              </Button>
+            )}
+            <Button type="link" onClick={() => handleEdit(record)}>
+              Chỉnh sửa
+            </Button>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -561,13 +650,20 @@ const FeedbackSentiment = () => {
       <Card
         title="Danh sách Feedback"
         extra={
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={fetchFeedbacks}
-            loading={loading}
-          >
-            Làm mới
-          </Button>
+          <Space>
+            <Upload {...uploadProps} disabled={importing}>
+              <Button icon={<UploadOutlined />} loading={importing}>
+                Import Excel
+              </Button>
+            </Upload>
+            <Button
+              icon={<ReloadOutlined />}
+              onClick={fetchFeedbacks}
+              loading={loading}
+            >
+              Làm mới
+            </Button>
+          </Space>
         }
       >
         <Table

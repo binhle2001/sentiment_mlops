@@ -197,6 +197,16 @@ class FeedbackSentimentListResponse(BaseModel):
     feedback_source: Optional[FeedbackSource] = None
 
 
+class FeedbackImportResponse(BaseModel):
+    """Kết quả import feedback từ file Excel."""
+    imported: int = Field(..., ge=0, description="Số feedback import thành công")
+    failed: int = Field(..., ge=0, description="Số dòng bị lỗi và được ghi log")
+    log_file: Optional[str] = Field(
+        default=None,
+        description="Đường dẫn tới file log chứa chi tiết các dòng lỗi (nếu có)",
+    )
+
+
 # --- Intent Analysis Schemas ---
 
 class IntentTriplet(BaseModel):
