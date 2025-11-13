@@ -7,6 +7,17 @@ File `migrate.py` là Python script để chạy database migration cho tính n�
 - Tạo bảng `feedback_intents` để cache kết quả phân tích
 - Tạo các indexes cần thiết
 
+Ngoài ra, để chuyển toàn bộ `labels.id` từ UUID sang số nguyên (phục vụ đồng bộ với hệ thống khác), sử dụng script mới `migrate_ids_to_int.py`. Script này sẽ:
+- Sinh ID nguyên tăng dần dựa trên thứ tự hiện tại của bảng `labels`
+- Cập nhật toàn bộ khóa ngoại liên quan (`feedback_sentiments`, `feedback_intents`) sang INTEGER
+- Tái tạo constraint/index tương ứng
+
+👉 **Chạy script này ngay sau khi pull phiên bản mới và trước khi khởi động dịch vụ.**
+
+```bash
+python migrate_ids_to_int.py
+```
+
 ## Yêu Cầu
 
 1. **Docker services đang chạy:**
@@ -100,9 +111,9 @@ CREATE INDEX idx_labels_embedding ON labels USING GIN(embedding);
 CREATE TABLE feedback_intents (
     id UUID PRIMARY KEY,
     feedback_id UUID NOT NULL,
-    level1_id UUID NOT NULL,
-    level2_id UUID NOT NULL,
-    level3_id UUID NOT NULL,
+    level1_id INTEGER NOT NULL,
+    level2_id INTEGER NOT NULL,
+    level3_id INTEGER NOT NULL,
     avg_cosine_similarity REAL NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE,
     

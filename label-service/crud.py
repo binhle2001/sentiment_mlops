@@ -1,7 +1,7 @@
 """CRUD operations with raw SQL queries."""
 import logging
 from typing import List, Optional, Dict, Any
-from uuid import UUID, uuid4
+from uuid import UUID
 from datetime import datetime
 
 from schemas import (
@@ -30,6 +30,18 @@ class LabelCRUD:
     """CRUD operations for Label with raw SQL."""
     
     @staticmethod
+    def _generate_next_id(conn) -> int:
+        """Generate next available integer ID for labels."""
+        from database import execute_query
+
+        result = execute_query(
+            conn,
+            "SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM labels",
+            fetch="one",
+        )
+        return int(result["next_id"]) if result and result.get("next_id") is not None else 1
+
+    @staticmethod
     def create(conn, label_data: LabelCreate) -> Dict[str, Any]:
         """Create a new label."""
         # Validate parent exists if parent_id is provided
@@ -44,22 +56,26 @@ class LabelCRUD:
                     f"Invalid level {label_data.level}. "
                     f"Parent is level {parent['level']}, so child must be level {parent['level'] + 1}"
                 )
-        
+        new_id = label_data.id or LabelCRUD._generate_next_id(conn)
+
+        # Ensure provided ID is unique
+        if label_data.id is not None:
+            existing = LabelCRUD.get_by_id(conn, label_data.id)
+            if existing:
+                raise ValueError(f"Label id {label_data.id} already exists")
+
         query = """
-            INSERT INTO labels (name, level, parent_id, description)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO labels (id, name, level, parent_id, description)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING id, name, level, parent_id, description, created_at, updated_at
         """
         
         from database import execute_query
-        # Convert UUID to string if not None
-        parent_id_str = str(label_data.parent_id) if label_data.parent_id else None
-        
         result = execute_query(
-            conn, 
-            query, 
-            (label_data.name, label_data.level, parent_id_str, label_data.description),
-            fetch="one"
+            conn,
+            query,
+            (new_id, label_data.name, label_data.level, label_data.parent_id, label_data.description),
+            fetch="one",
         )
         
         label = row_to_dict(result)
@@ -67,7 +83,7 @@ class LabelCRUD:
         return label
     
     @staticmethod
-    def get_by_id(conn, label_id: UUID) -> Optional[Dict[str, Any]]:
+    def get_by_id(conn, label_id: int) -> Optional[Dict[str, Any]]:
         """Get label by ID."""
         query = """
             SELECT id, name, level, parent_id, description, created_at, updated_at
@@ -76,14 +92,14 @@ class LabelCRUD:
         """
         
         from database import execute_query
-        result = execute_query(conn, query, (str(label_id),), fetch="one")
+        result = execute_query(conn, query, (label_id,), fetch="one")
         return row_to_dict(result)
     
     @staticmethod
     def get_all(
         conn,
         level: Optional[int] = None,
-        parent_id: Optional[UUID] = None,
+        parent_id: Optional[int] = None,
         skip: int = 0,
         limit: int = 100
     ) -> List[Dict[str, Any]]:
@@ -97,8 +113,7 @@ class LabelCRUD:
         
         if parent_id is not None:
             conditions.append("parent_id = %s")
-            # Convert UUID to string
-            params.append(str(parent_id) if parent_id else None)
+            params.append(parent_id)
         
         where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
         
@@ -119,7 +134,7 @@ class LabelCRUD:
     def count(
         conn,
         level: Optional[int] = None,
-        parent_id: Optional[UUID] = None
+        parent_id: Optional[int] = None
     ) -> int:
         """Count labels with optional filters."""
         conditions = []
@@ -131,8 +146,7 @@ class LabelCRUD:
         
         if parent_id is not None:
             conditions.append("parent_id = %s")
-            # Convert UUID to string
-            params.append(str(parent_id) if parent_id else None)
+            params.append(parent_id)
         
         where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
         
@@ -161,22 +175,22 @@ class LabelCRUD:
         labels = rows_to_list(results)
         
         # Build tree structure
-        label_dict = {str(label['id']): {**label, 'children': []} for label in labels}
+        label_dict = {label['id']: {**label, 'children': []} for label in labels}
         tree = []
         
         for label in labels:
-            label_with_children = label_dict[str(label['id'])]
+            label_with_children = label_dict[label['id']]
             if label['parent_id'] is None:
                 tree.append(label_with_children)
             else:
-                parent_id = str(label['parent_id'])
+                parent_id = label['parent_id']
                 if parent_id in label_dict:
                     label_dict[parent_id]['children'].append(label_with_children)
         
         return tree
     
     @staticmethod
-    def get_children(conn, parent_id: UUID) -> List[Dict[str, Any]]:
+    def get_children(conn, parent_id: int) -> List[Dict[str, Any]]:
         """Get all children of a parent label."""
         query = """
             SELECT id, name, level, parent_id, description, created_at, updated_at
@@ -186,13 +200,13 @@ class LabelCRUD:
         """
         
         from database import execute_query
-        results = execute_query(conn, query, (str(parent_id),), fetch="all")
+        results = execute_query(conn, query, (parent_id,), fetch="all")
         return rows_to_list(results)
     
     @staticmethod
     def update(
         conn,
-        label_id: UUID,
+        label_id: int,
         label_data: LabelUpdate
     ) -> Optional[Dict[str, Any]]:
         """Update a label."""
@@ -212,7 +226,7 @@ class LabelCRUD:
         if not update_fields:
             return label
         
-        params.append(str(label_id))
+        params.append(label_id)
         
         query = f"""
             UPDATE labels
@@ -229,7 +243,7 @@ class LabelCRUD:
         return updated_label
     
     @staticmethod
-    def delete(conn, label_id: UUID) -> bool:
+    def delete(conn, label_id: int) -> bool:
         """Delete a label (cascade deletes children)."""
         label = LabelCRUD.get_by_id(conn, label_id)
         if not label:
@@ -238,7 +252,7 @@ class LabelCRUD:
         query = "DELETE FROM labels WHERE id = %s"
         
         from database import execute_query
-        execute_query(conn, query, (str(label_id),), fetch="none")
+        execute_query(conn, query, (label_id,), fetch="none")
         
         logger.info(f"Deleted label: {label['name']} (id={label_id})")
         return True
@@ -247,7 +261,7 @@ class LabelCRUD:
     def exists_by_name_and_parent(
         conn,
         name: str,
-        parent_id: Optional[UUID]
+        parent_id: Optional[int]
     ) -> bool:
         """Check if a label with the same name and parent exists."""
         if parent_id is None:
@@ -261,8 +275,7 @@ class LabelCRUD:
                 SELECT id FROM labels
                 WHERE name = %s AND parent_id = %s
             """
-            # Convert UUID to string
-            params = (name, str(parent_id) if parent_id else None)
+            params = (name, parent_id)
         
         from database import execute_query
         result = execute_query(conn, query, params, fetch="one")
@@ -319,7 +332,7 @@ class LabelCRUD:
         return results
     
     @staticmethod
-    def update_embedding(conn, label_id: UUID, embedding_vector: list) -> bool:
+    def update_embedding(conn, label_id: int, embedding_vector: list) -> bool:
         """Update embedding vector for a label."""
         query = """
             UPDATE labels
@@ -328,7 +341,7 @@ class LabelCRUD:
         """
         
         from database import execute_query
-        execute_query(conn, query, (embedding_vector, str(label_id)), fetch="none")
+        execute_query(conn, query, (embedding_vector, label_id), fetch="none")
         
         logger.info(f"Updated embedding for label id={label_id}")
         return True
@@ -365,9 +378,9 @@ class FeedbackSentimentCRUD:
         feedback_data: FeedbackSentimentCreate,
         sentiment_label: str,
         confidence_score: float,
-        level1_id: Optional[UUID] = None,
-        level2_id: Optional[UUID] = None,
-        level3_id: Optional[UUID] = None
+        level1_id: Optional[int] = None,
+        level2_id: Optional[int] = None,
+        level3_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """Create a new feedback sentiment record with optional intent labels."""
         query = """
@@ -390,9 +403,9 @@ class FeedbackSentimentCRUD:
                 sentiment_label, 
                 confidence_score, 
                 feedback_data.feedback_source.value,
-                str(level1_id) if level1_id else None,
-                str(level2_id) if level2_id else None,
-                str(level3_id) if level3_id else None
+                level1_id,
+                level2_id,
+                level3_id,
             ),
             fetch="one"
         )
@@ -450,7 +463,7 @@ class FeedbackSentimentCRUD:
             new_level3_id = None
 
         # Validate hierarchy when IDs are present
-        def _load_label(label_id: Optional[UUID]) -> Optional[Dict[str, Any]]:
+        def _load_label(label_id: Optional[int]) -> Optional[Dict[str, Any]]:
             if label_id is None:
                 return None
             label = LabelCRUD.get_by_id(conn, label_id)
@@ -470,7 +483,7 @@ class FeedbackSentimentCRUD:
                 raise ValueError("Level 2 intent phải là label cấp 2")
             if not new_level1_id:
                 raise ValueError("Phải chọn Level 1 trước khi chọn Level 2")
-            if str(level2_label["parent_id"]) != str(new_level1_id):
+            if level2_label["parent_id"] != new_level1_id:
                 raise ValueError("Level 2 được chọn không thuộc Level 1 đã chọn")
 
         if level3_label:
@@ -478,7 +491,7 @@ class FeedbackSentimentCRUD:
                 raise ValueError("Level 3 intent phải là label cấp 3")
             if not new_level2_id:
                 raise ValueError("Phải chọn Level 2 trước khi chọn Level 3")
-            if str(level3_label["parent_id"]) != str(new_level2_id):
+            if level3_label["parent_id"] != new_level2_id:
                 raise ValueError("Level 3 được chọn không thuộc Level 2 đã chọn")
 
         # Ensure hierarchy consistency when parent missing
@@ -497,15 +510,15 @@ class FeedbackSentimentCRUD:
 
         if new_level1_id != existing.get("level1_id"):
             update_fields.append("level1_id = %s")
-            params.append(str(new_level1_id) if new_level1_id else None)
+            params.append(new_level1_id)
 
         if new_level2_id != existing.get("level2_id"):
             update_fields.append("level2_id = %s")
-            params.append(str(new_level2_id) if new_level2_id else None)
+            params.append(new_level2_id)
 
         if new_level3_id != existing.get("level3_id"):
             update_fields.append("level3_id = %s")
-            params.append(str(new_level3_id) if new_level3_id else None)
+            params.append(new_level3_id)
 
         if not update_fields:
             logger.info("No changes detected for feedback %s; skipping update", feedback_id)
@@ -695,21 +708,19 @@ class FeedbackIntentCRUD:
             return []
         
         # Build parent-child relationships
-        level2_by_parent = {}
+        level2_by_parent: Dict[int, List[Dict[str, Any]]] = {}
         for l2 in level2_labels:
-            parent_id = str(l2['parent_id']) if l2['parent_id'] else None
-            if parent_id:
-                if parent_id not in level2_by_parent:
-                    level2_by_parent[parent_id] = []
-                level2_by_parent[parent_id].append(l2)
+            parent_id = l2['parent_id']
+            if parent_id is None:
+                continue
+            level2_by_parent.setdefault(parent_id, []).append(l2)
         
-        level3_by_parent = {}
+        level3_by_parent: Dict[int, List[Dict[str, Any]]] = {}
         for l3 in level3_labels:
-            parent_id = str(l3['parent_id']) if l3['parent_id'] else None
-            if parent_id:
-                if parent_id not in level3_by_parent:
-                    level3_by_parent[parent_id] = []
-                level3_by_parent[parent_id].append(l3)
+            parent_id = l3['parent_id']
+            if parent_id is None:
+                continue
+            level3_by_parent.setdefault(parent_id, []).append(l3)
         
         # Step 1: Calculate similarity for all level1 and get top N
         level1_with_sim = []
@@ -732,7 +743,7 @@ class FeedbackIntentCRUD:
         all_l2_candidates = []
         for l1_item in top_level1_items:
             l1 = l1_item['label']
-            l1_id = str(l1['id'])
+            l1_id = l1['id']
             sim1 = l1_item['similarity']
             
             # Get ALL level2 children of this level1
@@ -765,7 +776,7 @@ class FeedbackIntentCRUD:
             l2 = l2_item['level2']
             sim1 = l2_item['level1_sim']
             sim2 = l2_item['level2_sim']
-            l2_id = str(l2['id'])
+            l2_id = l2['id']
             
             # Get ALL level3 children of this level2
             l3_children = level3_by_parent.get(l2_id, [])

@@ -11,7 +11,7 @@ class LabelBase(BaseModel):
     """Base label schema."""
     name: str = Field(..., min_length=1, max_length=255, description="Label name")
     level: int = Field(..., ge=1, le=3, description="Label level (1, 2, or 3)")
-    parent_id: Optional[UUID] = Field(None, description="Parent label ID")
+    parent_id: Optional[int] = Field(None, ge=1, description="Parent label ID")
     description: Optional[str] = Field(None, description="Label description")
     
     @validator('level')
@@ -34,7 +34,11 @@ class LabelBase(BaseModel):
 
 class LabelCreate(LabelBase):
     """Schema for creating a label."""
-    pass
+    id: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Label ID (optional - if omitted, will be assigned automatically)",
+    )
 
 
 class LabelUpdate(BaseModel):
@@ -47,7 +51,7 @@ class LabelUpdate(BaseModel):
 
 class LabelResponse(LabelBase):
     """Schema for label response."""
-    id: UUID
+    id: int
     created_at: datetime
     updated_at: datetime
     
@@ -68,7 +72,7 @@ class LabelListResponse(BaseModel):
     labels: List[LabelResponse]
     total: int
     level: Optional[int] = None
-    parent_id: Optional[UUID] = None
+    parent_id: Optional[int] = None
 
 
 class HealthResponse(BaseModel):
@@ -142,15 +146,15 @@ class FeedbackSentimentUpdate(BaseModel):
         default=None,
         description="Updated sentiment label",
     )
-    level1_id: Optional[UUID] = Field(
+    level1_id: Optional[int] = Field(
         default=None,
         description="Selected level 1 label ID (or null to clear intent)",
     )
-    level2_id: Optional[UUID] = Field(
+    level2_id: Optional[int] = Field(
         default=None,
         description="Selected level 2 label ID (must be child of level1)",
     )
-    level3_id: Optional[UUID] = Field(
+    level3_id: Optional[int] = Field(
         default=None,
         description="Selected level 3 label ID (must be child of level2)",
     )
@@ -164,9 +168,9 @@ class FeedbackSentimentResponse(BaseModel):
     confidence_score: float
     feedback_source: FeedbackSource
     created_at: datetime
-    level1_id: Optional[UUID] = None
-    level2_id: Optional[UUID] = None
-    level3_id: Optional[UUID] = None
+    level1_id: Optional[int] = None
+    level2_id: Optional[int] = None
+    level3_id: Optional[int] = None
     level1_name: Optional[str] = None
     level2_name: Optional[str] = None
     level3_name: Optional[str] = None
