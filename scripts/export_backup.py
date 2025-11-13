@@ -109,6 +109,7 @@ def load_labels(conn: psycopg2.extensions.connection) -> pd.DataFrame:
         "created_at",
         "updated_at",
     ]
+    labels = labels[ordered_columns]
 
     labels = labels.rename(
         columns={
@@ -117,7 +118,7 @@ def load_labels(conn: psycopg2.extensions.connection) -> pd.DataFrame:
             "id": "original_id",
             "parent_id": "original_parent_id",
         }
-    )[ordered_columns]
+    )
 
     return labels
 
