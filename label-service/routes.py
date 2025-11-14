@@ -441,6 +441,60 @@ async def call_embedding_service(text: str) -> list:
         )
 
 
+async def _classify_intent_for_feedback(
+    feedback_text: str,
+    feedback_id: Optional[UUID] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Helper function to classify intent for a feedback.
+    Returns dict with level1_id, level2_id, level3_id if successful, None otherwise.
+    """
+    try:
+        # Step 1: Get embedding for feedback
+        feedback_embedding = await call_embedding_service(feedback_text)
+        
+        if not feedback_embedding:
+            logger.warning(f"Failed to get embedding for feedback {feedback_id or 'new'}")
+            return None
+        
+        # Step 2: Get top 10 intent candidates
+        with get_db() as conn:
+            intent_candidates = FeedbackIntentCRUD.get_top_intents(
+                conn,
+                feedback_embedding,
+                limit=10,
+                top_level1=5,
+                top_level2_total=15,
+                top_level3_total=50
+            )
+            
+            if not intent_candidates:
+                logger.warning(f"No intent candidates found for feedback {feedback_id or 'new'}")
+                return None
+            
+            # Step 3: Use Gemini to select best intent from top 10
+            try:
+                gemini_service = get_gemini_service()
+                selected_intent = gemini_service.select_best_intent(
+                    feedback_text,
+                    intent_candidates
+                )
+                if selected_intent:
+                    return {
+                        'level1_id': selected_intent['level1']['id'],
+                        'level2_id': selected_intent['level2']['id'],
+                        'level3_id': selected_intent['level3']['id']
+                    }
+            except Exception as e:
+                logger.warning(f"Gemini service error for feedback {feedback_id or 'new'}: {e}")
+                return None
+        
+        return None
+    except Exception as e:
+        logger.error(f"Error classifying intent for feedback {feedback_id or 'new'}: {e}", exc_info=True)
+        return None
+
+
 async def _reprocess_feedbacks_after_label_update(
     feedback_ids: List[UUID],
 ) -> List[dict]:
@@ -656,8 +710,24 @@ async def create_feedback_sentiment(feedback_data: FeedbackSentimentCreate):
             logger.warning("Failed to get embedding, saving feedback without intent")
             with get_db() as conn:
                 feedback = FeedbackSentimentCRUD.create(
-                    conn, feedback_data, sentiment_label, confidence_score
+                    conn, feedback_data, sentiment_label, confidence_score,
+                    is_model_confirmed=False
                 )
+                # Thử tự động phân loại lại sau khi lưu
+                try:
+                    intent_result = await _classify_intent_for_feedback(feedback_data.feedback_text, feedback['id'])
+                    if intent_result:
+                        update_data = FeedbackSentimentUpdate(
+                            level1_id=intent_result['level1_id'],
+                            level2_id=intent_result['level2_id'],
+                            level3_id=intent_result['level3_id'],
+                            is_model_confirmed=False
+                        )
+                        feedback = FeedbackSentimentCRUD.update(conn, feedback['id'], update_data)
+                        if feedback:
+                            return feedback
+                except Exception as e:
+                    logger.warning(f"Failed to auto-classify intent after save: {e}")
                 return feedback
         
         # Step 3: Get top 10 intent candidates (5 L1 → 15 L2 → 50 L3 → 10 best)
@@ -676,7 +746,8 @@ async def create_feedback_sentiment(feedback_data: FeedbackSentimentCreate):
             logger.warning("No intent candidates found, saving feedback without intent")
             with get_db() as conn:
                 feedback = FeedbackSentimentCRUD.create(
-                    conn, feedback_data, sentiment_label, confidence_score
+                    conn, feedback_data, sentiment_label, confidence_score,
+                    is_model_confirmed=False
                 )
                 return feedback
         
@@ -702,13 +773,15 @@ async def create_feedback_sentiment(feedback_data: FeedbackSentimentCreate):
                     confidence_score,
                     level1_id=selected_intent['level1']['id'],
                     level2_id=selected_intent['level2']['id'],
-                    level3_id=selected_intent['level3']['id']
+                    level3_id=selected_intent['level3']['id'],
+                    is_model_confirmed=False  # Tự động phân loại -> chờ xác nhận
                 )
                 logger.info(f"Feedback saved with intent: {selected_intent['level1']['name']} → "
                           f"{selected_intent['level2']['name']} → {selected_intent['level3']['name']}")
             else:
                 feedback = FeedbackSentimentCRUD.create(
-                    conn, feedback_data, sentiment_label, confidence_score
+                    conn, feedback_data, sentiment_label, confidence_score,
+                    is_model_confirmed=False
                 )
                 logger.warning("Feedback saved without intent (Gemini failed)")
             
@@ -1001,7 +1074,8 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
                             f"Level3 '{level3_value}' không thuộc Level2 '{level2_label['name']}'"
                         )
 
-            if row_errors or sentiment_enum is None:
+            # Nếu có lỗi về sentiment, bỏ qua dòng này
+            if sentiment_enum is None:
                 error_rows.append(
                     {
                         "row_index": row_idx,
@@ -1023,6 +1097,32 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
             level1_id = level1_label["id"] if level1_label else None
             level2_id = level2_label["id"] if level2_label else None
             level3_id = level3_label["id"] if level3_label else None
+            
+            # Kiểm tra xem có đủ nhãn và tất cả đều hợp lệ không
+            # Cần có đủ cả 3 nhãn (level1, level2, level3) và không có lỗi nào
+            has_all_labels = level1_id is not None and level2_id is not None and level3_id is not None
+            has_no_label_errors = not any("Level" in error or "level" in error.lower() for error in row_errors)
+            
+            if has_all_labels and has_no_label_errors:
+                # Có đủ nhãn và tất cả đều hợp lệ -> đã được xác nhận (is_model_confirmed = True)
+                is_confirmed = True
+                logger.info(f"Row {row_idx}: Có đủ nhãn hợp lệ, lưu với is_model_confirmed = True")
+            else:
+                # Thiếu nhãn hoặc có lỗi về nhãn -> tự động phân loại lại
+                logger.info(f"Row {row_idx}: Thiếu nhãn hoặc nhãn không hợp lệ, sẽ tự động phân loại intent")
+                intent_result = await _classify_intent_for_feedback(content_value)
+                if intent_result:
+                    level1_id = intent_result['level1_id']
+                    level2_id = intent_result['level2_id']
+                    level3_id = intent_result['level3_id']
+                    # Tự động phân loại -> chờ xác nhận (is_model_confirmed = False)
+                    is_confirmed = False
+                else:
+                    # Không thể phân loại -> lưu không có intent
+                    level1_id = None
+                    level2_id = None
+                    level3_id = None
+                    is_confirmed = False
 
             FeedbackSentimentCRUD.create(
                 conn,
@@ -1032,7 +1132,7 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
                 level1_id=level1_id,
                 level2_id=level2_id,
                 level3_id=level3_id,
-                is_model_confirmed=bool(level1_label),
+                is_model_confirmed=is_confirmed,
             )
             inserted += 1
 
@@ -1225,6 +1325,7 @@ async def import_feedbacks_simple_from_excel(file: UploadFile = File(...)):
                             logger.warning(f"Gemini service error for row {row_idx}: {e}, continuing without intent")
                 
                 # Step 5: Save to database
+                # Tự động phân loại -> chờ xác nhận (is_model_confirmed = False)
                 with get_db() as conn:
                     FeedbackSentimentCRUD.create(
                         conn,
@@ -1233,7 +1334,8 @@ async def import_feedbacks_simple_from_excel(file: UploadFile = File(...)):
                         confidence_score,
                         level1_id=level1_id,
                         level2_id=level2_id,
-                        level3_id=level3_id
+                        level3_id=level3_id,
+                        is_model_confirmed=False  # Tự động phân loại -> chờ xác nhận
                     )
             else:
                 # Save without intent if embedding fails
@@ -1242,7 +1344,8 @@ async def import_feedbacks_simple_from_excel(file: UploadFile = File(...)):
                         conn,
                         feedback_data,
                         sentiment_label,
-                        confidence_score
+                        confidence_score,
+                        is_model_confirmed=False
                     )
             
             inserted += 1
