@@ -34,6 +34,7 @@ from schemas import (
     SentimentLabel,
     IntentTriplet,
     FeedbackIntentResponse,
+    LabelSyncItem,
     LabelSyncRequest,
     LabelSyncResponse,
     FeedbackReprocessStatus,
