@@ -1600,13 +1600,15 @@ async def auto_classify_feedbacks_without_intents():
         with get_db() as conn:
             from database import execute_query
             
-            # Lấy tất cả feedback chưa có intent
+            # Lấy tất cả feedback chưa có intent (level1_id, level2_id, level3_id đều NULL)
             results = execute_query(
                 conn,
                 """
                 SELECT id, feedback_text 
                 FROM feedback_sentiments 
-                WHERE level1_id IS NULL
+                WHERE level1_id IS NULL 
+                  AND level2_id IS NULL 
+                  AND level3_id IS NULL
                 ORDER BY created_at DESC
                 """,
                 fetch="all"
