@@ -78,6 +78,22 @@ export const labelAPI = {
   healthCheck: () => {
     return api.get('/health');
   },
+
+  // Sync labels from JSON file
+  syncLabels: (formData) => {
+    return api.post('/labels/sync', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  },
+
+  // Export labels as JSON backup
+  exportLabelsBackup: () => {
+    return api.get('/labels/export', {
+      responseType: 'blob', // Important for file download
+    });
+  },
 };
 
 // Feedback Sentiment API endpoints

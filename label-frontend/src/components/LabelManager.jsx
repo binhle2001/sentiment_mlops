@@ -10,12 +10,15 @@ import {
   Row,
   Col,
   Input,
+  Upload,
 } from 'antd';
 import {
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
   AppstoreAddOutlined,
+  UploadOutlined,
+  DownloadOutlined,
 } from '@ant-design/icons';
 import LabelTree from './LabelTree';
 import LabelForm from './LabelForm';
@@ -33,6 +36,7 @@ const LabelManager = () => {
   const [parentLabel, setParentLabel] = useState(null);
   const [stats, setStats] = useState({ level1: 0, level2: 0, level3: 0, total: 0 });
   const [searchText, setSearchText] = useState('');
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     loadLabels();
@@ -114,6 +118,64 @@ const LabelManager = () => {
     loadStats();
   };
 
+  const handleSyncLabels = async (file) => {
+    if (!file) {
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      setSyncing(true);
+      const result = await labelAPI.syncLabels(formData);
+      message.success(
+        `Đã sync ${result.total} labels: ${result.created} mới, ${result.updated} cập nhật, ${result.unchanged} không thay đổi`
+      );
+      if (result.impacted_feedbacks > 0) {
+        message.info(
+          `Có ${result.impacted_feedbacks} feedback bị ảnh hưởng và đã được xử lý lại`
+        );
+      }
+      await loadLabels();
+      await loadStats();
+    } catch (error) {
+      const detail = error?.response?.data?.detail || 'Không thể sync labels';
+      message.error(detail);
+      console.error('Error syncing labels:', error);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleExportBackup = async () => {
+    try {
+      const blob = await labelAPI.exportLabelsBackup();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `labels_backup_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      message.success('Đã export labels backup thành công');
+    } catch (error) {
+      const detail = error?.response?.data?.detail || 'Không thể export backup';
+      message.error(detail);
+      console.error('Error exporting backup:', error);
+    }
+  };
+
+  const uploadProps = {
+    accept: '.json',
+    showUploadList: false,
+    beforeUpload: (file) => {
+      handleSyncLabels(file);
+      return false;
+    },
+  };
+
   // Filter labels based on search
   const filterLabels = (labels, searchText) => {
     if (!searchText) return labels;
@@ -155,6 +217,21 @@ const LabelManager = () => {
             style={{ background: '#52c41a', borderColor: '#52c41a' }}
           >
             Bulk Create
+          </Button>
+          <Upload {...uploadProps} disabled={syncing}>
+            <Button 
+              icon={<UploadOutlined />} 
+              loading={syncing}
+              disabled={syncing}
+            >
+              Sync Labels
+            </Button>
+          </Upload>
+          <Button 
+            icon={<DownloadOutlined />} 
+            onClick={handleExportBackup}
+          >
+            Export Backup
           </Button>
           <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
             Refresh

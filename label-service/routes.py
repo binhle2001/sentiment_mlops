@@ -9,6 +9,8 @@ from uuid import UUID
 import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
+from fastapi.responses import JSONResponse
+import json
 
 from openpyxl import load_workbook
 
@@ -181,18 +183,109 @@ def create_labels_bulk(bulk_data: BulkLabelCreate):
         )
 
 
+@router.get(
+    "/labels/export",
+    summary="Export all labels as JSON backup"
+)
+def export_labels_backup():
+    """Export tất cả labels ra file JSON để backup."""
+    try:
+        with get_db() as conn:
+            # Lấy tất cả labels không giới hạn
+            labels = LabelCRUD.get_all(conn, skip=0, limit=100000)
+            
+            # Chuyển đổi sang format LabelSyncItem (có id, name, level, parent_id, description, updated_at)
+            export_data = {
+                "labels": [
+                    {
+                        "id": label["id"],
+                        "name": label["name"],
+                        "level": label["level"],
+                        "parent_id": label.get("parent_id"),
+                        "description": label.get("description"),
+                        "updated_at": label.get("updated_at").isoformat() if label.get("updated_at") else None
+                    }
+                    for label in labels
+                ],
+                "exported_at": datetime.utcnow().isoformat(),
+                "total": len(labels)
+            }
+            
+            return JSONResponse(
+                content=export_data,
+                headers={
+                    "Content-Disposition": f"attachment; filename=labels_backup_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+                }
+            )
+    except Exception as e:
+        logger.error(f"Error exporting labels: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to export labels"
+        )
+
+
 @router.post(
     "/labels/sync",
     response_model=LabelSyncResponse,
-    summary="Sync labels from external system"
+    summary="Sync labels from external system (JSON file or JSON body)"
 )
-async def sync_labels(sync_request: LabelSyncRequest):
-    """Đồng bộ label từ hệ thống ngoài và xử lý feedback bị ảnh hưởng."""
+async def sync_labels(
+    sync_request: Optional[LabelSyncRequest] = None,
+    file: Optional[UploadFile] = File(None)
+):
+    """Đồng bộ label từ hệ thống ngoài và xử lý feedback bị ảnh hưởng.
+    
+    Có thể nhận dữ liệu từ:
+    - File JSON upload (file parameter)
+    - JSON body (sync_request parameter)
+    """
     impacted_feedback_ids: List[UUID] = []
+    labels_to_sync = []
 
     try:
+        # Nếu có file upload, đọc từ file
+        if file:
+            if not file.filename or not file.filename.lower().endswith('.json'):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Chỉ hỗ trợ file JSON"
+                )
+            content = await file.read()
+            try:
+                data = json.loads(content.decode('utf-8'))
+                # Hỗ trợ cả format có "labels" key hoặc trực tiếp là array
+                if isinstance(data, dict) and "labels" in data:
+                    labels_to_sync = data["labels"]
+                elif isinstance(data, list):
+                    labels_to_sync = data
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="File JSON không đúng định dạng. Cần có key 'labels' hoặc là array"
+                    )
+            except json.JSONDecodeError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"File JSON không hợp lệ: {str(e)}"
+                )
+        elif sync_request:
+            # Nếu có sync_request từ body
+            labels_to_sync = sync_request.labels
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cần cung cấp file JSON hoặc JSON body"
+            )
+        
+        if not labels_to_sync:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Không có label nào để sync"
+            )
+
         with get_db() as conn:
-            sync_result = LabelCRUD.sync_labels(conn, sync_request.labels)
+            sync_result = LabelCRUD.sync_labels(conn, labels_to_sync)
             changed_label_ids = sync_result.get("changed_label_ids", [])
 
             if changed_label_ids:
@@ -223,7 +316,7 @@ async def sync_labels(sync_request: LabelSyncRequest):
         updated=sync_result["updated"],
         unchanged=sync_result["unchanged"],
         results=sync_result["results"],
-        total=len(sync_request.labels),
+        total=len(labels_to_sync),
         changed_label_ids=sync_result.get("changed_label_ids", []),
         impacted_feedbacks=len(impacted_feedback_ids),
         reprocessed_feedbacks=reprocess_results,
