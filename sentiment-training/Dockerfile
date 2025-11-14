@@ -11,7 +11,7 @@ RUN apt-get update && \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY requirements.txt .
+COPY sentiment-training/requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
@@ -32,7 +32,8 @@ RUN groupadd --gid 1001 appuser && \
     useradd --uid 1001 --gid 1001 -m appuser
 
 WORKDIR /app
-COPY . .
+COPY sentiment-training/ .
+COPY training_sentiment.py .
 RUN chown -R appuser:appuser /app
 
 USER appuser

@@ -32,10 +32,10 @@ async def startup_event():
     init_pool()
     # Run the training check in a background thread to avoid blocking the server
     training_thread = threading.Thread(target=train_if_model_does_not_exist)
-    training_thread.start()init_db_connection()
+    training_thread.start()
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    close_db_connection()
+    close_pool()
 
 app.include_router(api_router, prefix="/api")

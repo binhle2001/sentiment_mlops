@@ -75,8 +75,8 @@ services:
   # Sentiment Training Service
   sentiment-training-service:
     build:
-      context: ./sentiment-training
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./sentiment-training/Dockerfile
     container_name: sentiment_training_service
     restart: unless-stopped
     ports:
