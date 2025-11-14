@@ -110,9 +110,18 @@ export const feedbackAPI = {
     return api.post(`/feedbacks/${id}/confirm`);
   },
 
-  // Import feedbacks from Excel
+  // Import feedbacks from Excel (full format with sentiment and intent)
   importFeedbacks: (formData) => {
     return api.post('/feedbacks/import', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  },
+
+  // Import feedbacks from Excel (simple format: content and source only)
+  importFeedbacksSimple: (formData) => {
+    return api.post('/feedbacks/import-simple', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },

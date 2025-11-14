@@ -1071,6 +1071,220 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
     )
 
 
+@router.post(
+    "/feedbacks/import-simple",
+    response_model=FeedbackImportResponse,
+    summary="Import feedback data from Excel file (simple format: content and source only)"
+)
+async def import_feedbacks_simple_from_excel(file: UploadFile = File(...)):
+    """
+    Import feedback sentiments from an Excel file with simple format.
+    Required columns: content (nội dung feedback)
+    Optional columns: source (nguồn feedback, default: 'web')
+    The system will automatically analyze sentiment and intent for each feedback.
+    """
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chỉ hỗ trợ import file Excel định dạng .xlsx"
+        )
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File Excel không có dữ liệu"
+        )
+
+    try:
+        workbook = load_workbook(filename=BytesIO(content), data_only=True)
+    except Exception as exc:
+        logger.error(f"Failed to read Excel file during import: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Không thể đọc file Excel. Vui lòng kiểm tra định dạng và nội dung."
+        )
+
+    sheet = workbook.active
+    header_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    if not header_row:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File Excel không có dòng header"
+        )
+
+    normalized_headers = [
+        str(cell).strip().lower() if cell is not None else ""
+        for cell in header_row
+    ]
+    
+    # Tìm các cột cần thiết
+    content_col_idx = None
+    source_col_idx = None
+    
+    for idx, header in enumerate(normalized_headers):
+        if header in ["content", "nội dung", "feedback", "feedback_text", "text"]:
+            content_col_idx = idx
+        elif header in ["source", "nguồn", "feedback_source"]:
+            source_col_idx = idx
+    
+    if content_col_idx is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File Excel phải có cột 'content' (hoặc 'nội dung', 'feedback', 'feedback_text', 'text')"
+        )
+
+    inserted = 0
+    error_rows = []
+
+    def _normalize(value) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    # Xử lý từng dòng
+    for row_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        row_values = list(row) if row else []
+        
+        # Lấy nội dung feedback
+        if content_col_idx >= len(row_values):
+            continue
+        content_value = _normalize(row_values[content_col_idx])
+        
+        if not content_value:
+            continue  # Bỏ qua dòng trống
+        
+        # Lấy nguồn feedback (mặc định là 'web')
+        source_value = 'web'
+        if source_col_idx is not None and source_col_idx < len(row_values):
+            raw_source = _normalize(row_values[source_col_idx])
+            if raw_source:
+                # Chuyển đổi tên nguồn sang giá trị enum
+                source_map = {
+                    'web': 'web',
+                    'app': 'app',
+                    'map': 'map',
+                    'form khảo sát': 'form khảo sát',
+                    'tổng đài': 'tổng đài',
+                }
+                source_value = source_map.get(raw_source.lower(), 'web')
+        
+        # Tạo feedback và tự động phân tích
+        try:
+            feedback_data = FeedbackSentimentCreate(
+                feedback_text=content_value,
+                feedback_source=FeedbackSource(source_value)
+            )
+            
+            # Sử dụng logic tương tự như create_feedback_sentiment
+            # Step 1: Call sentiment service
+            sentiment_result = await call_sentiment_service(feedback_data.feedback_text)
+            sentiment_label = sentiment_result.get("label")
+            confidence_score = sentiment_result.get("score")
+            
+            if not sentiment_label or confidence_score is None:
+                error_rows.append({
+                    "row_index": row_idx,
+                    "content": content_value,
+                    "errors": ["Không thể phân tích sentiment"]
+                })
+                continue
+            
+            # Step 2: Get embedding for feedback
+            feedback_embedding = await call_embedding_service(feedback_data.feedback_text)
+            
+            level1_id = None
+            level2_id = None
+            level3_id = None
+            
+            if feedback_embedding:
+                # Step 3: Get top 10 intent candidates
+                with get_db() as conn:
+                    intent_candidates = FeedbackIntentCRUD.get_top_intents(
+                        conn,
+                        feedback_embedding,
+                        limit=10,
+                        top_level1=5,
+                        top_level2_total=15,
+                        top_level3_total=50
+                    )
+                    
+                    if intent_candidates:
+                        # Step 4: Use Gemini to select best intent
+                        try:
+                            gemini_service = get_gemini_service()
+                            selected_intent = gemini_service.select_best_intent(
+                                feedback_data.feedback_text,
+                                intent_candidates
+                            )
+                            if selected_intent:
+                                level1_id = selected_intent['level1']['id']
+                                level2_id = selected_intent['level2']['id']
+                                level3_id = selected_intent['level3']['id']
+                        except Exception as e:
+                            logger.warning(f"Gemini service error for row {row_idx}: {e}, continuing without intent")
+                
+                # Step 5: Save to database
+                with get_db() as conn:
+                    FeedbackSentimentCRUD.create(
+                        conn,
+                        feedback_data,
+                        sentiment_label,
+                        confidence_score,
+                        level1_id=level1_id,
+                        level2_id=level2_id,
+                        level3_id=level3_id
+                    )
+            else:
+                # Save without intent if embedding fails
+                with get_db() as conn:
+                    FeedbackSentimentCRUD.create(
+                        conn,
+                        feedback_data,
+                        sentiment_label,
+                        confidence_score
+                    )
+            
+            inserted += 1
+            
+        except Exception as e:
+            logger.error(f"Error processing row {row_idx}: {e}", exc_info=True)
+            error_rows.append({
+                "row_index": row_idx,
+                "content": content_value,
+                "errors": [str(e)]
+            })
+
+    # Ghi log file nếu có lỗi
+    log_file_path = None
+    if error_rows:
+        log_dir = Path(__file__).resolve().parent / "logs" / "feedback_import"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file_path = log_dir / f"errors_simple_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+        with log_file_path.open("w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["row_index", "content", "errors"])
+            for row in error_rows:
+                writer.writerow([
+                    row["row_index"],
+                    row["content"],
+                    " | ".join(row["errors"]),
+                ])
+
+    log_file_str = None
+    if log_file_path:
+        try:
+            log_file_str = str(log_file_path.relative_to(Path(__file__).resolve().parent))
+        except ValueError:
+            log_file_str = str(log_file_path)
+
+    return FeedbackImportResponse(
+        imported=inserted,
+        failed=len(error_rows),
+        log_file=log_file_str,
+    )
+
+
 # --- Intent Analysis Routes ---
 
 @router.post(

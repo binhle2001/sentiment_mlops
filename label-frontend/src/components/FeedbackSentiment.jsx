@@ -55,6 +55,7 @@ const FeedbackSentiment = () => {
   const [labelLoading, setLabelLoading] = useState(false);
   const [confirmingId, setConfirmingId] = useState(null);
   const [importing, setImporting] = useState(false);
+  const [importingSimple, setImportingSimple] = useState(false);
 
   const loadLabelTree = async () => {
     try {
@@ -291,6 +292,43 @@ const FeedbackSentiment = () => {
     showUploadList: false,
     beforeUpload: (file) => {
       handleImportExcel(file);
+      return false;
+    },
+  };
+
+  const handleImportExcelSimple = async (file) => {
+    if (!file) {
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      setImportingSimple(true);
+      const result = await feedbackAPI.importFeedbacksSimple(formData);
+      message.success(`Đã import ${result.imported} feedback thành công và tự động phân tích sentiment/intent.`);
+      if (result.failed > 0) {
+        const warningMessage = result.log_file
+          ? `Có ${result.failed} dòng lỗi. Xem log tại ${result.log_file}`
+          : `Có ${result.failed} dòng lỗi.`;
+        message.warning(warningMessage);
+      }
+      await fetchFeedbacks();
+    } catch (error) {
+      const detail = error?.response?.data?.detail || 'Không thể import dữ liệu feedback';
+      message.error(detail);
+      console.error('Error importing feedbacks:', error);
+    } finally {
+      setImportingSimple(false);
+    }
+  };
+
+  const uploadSimpleProps = {
+    accept: '.xlsx',
+    showUploadList: false,
+    beforeUpload: (file) => {
+      handleImportExcelSimple(file);
       return false;
     },
   };
@@ -566,6 +604,15 @@ const FeedbackSentiment = () => {
               >
                 Phân tích Sentiment
               </Button>
+              <Upload {...uploadSimpleProps} disabled={importingSimple || loading}>
+                <Button 
+                  icon={<UploadOutlined />} 
+                  loading={importingSimple}
+                  disabled={loading}
+                >
+                  Import Excel
+                </Button>
+              </Upload>
               <Button onClick={() => form.resetFields()}>Xóa</Button>
             </Space>
           </Form.Item>
