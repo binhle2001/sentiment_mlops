@@ -49,6 +49,12 @@ WORKDIR /app
 
 # Copy application code
 COPY . .
+
+# Tạo thư mục logs và set quyền trước khi switch user
+RUN mkdir -p /app/logs/feedback_import && \
+    chmod -R 777 /app/logs
+
+# Set ownership cho toàn bộ /app
 RUN chown -R appuser:appuser /app
 
 # Switch to non-root user

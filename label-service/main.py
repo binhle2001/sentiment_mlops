@@ -1,5 +1,7 @@
 """Main application entry point for Label Management Service."""
 import logging
+import os
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -22,6 +24,22 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def setup_logs_directory():
+    """Tạo thư mục logs và set quyền ghi."""
+    try:
+        log_dir = Path(__file__).resolve().parent / "logs" / "feedback_import"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # Set quyền ghi cho thư mục (0o777 = rwxrwxrwx)
+        os.chmod(log_dir, 0o777)
+        # Set quyền cho thư mục cha logs nếu cần
+        logs_parent = log_dir.parent
+        if logs_parent.exists():
+            os.chmod(logs_parent, 0o777)
+        logger.info(f"Đã tạo và set quyền cho thư mục logs: {log_dir}")
+    except Exception as e:
+        logger.warning(f"Không thể tạo thư mục logs hoặc set quyền: {e}. Sẽ dùng thư mục tạm khi cần.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan events."""
@@ -29,6 +47,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.app_name} v{settings.app_version}...")
     
     try:
+        # Setup logs directory với quyền ghi
+        setup_logs_directory()
+        
         # Initialize database connection pool
         init_pool()
         # Initialize database tables

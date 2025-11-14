@@ -1284,8 +1284,19 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
 
     log_file_path = None
     if error_rows:
-        log_dir = Path(__file__).resolve().parent / "logs" / "feedback_import"
-        log_dir.mkdir(parents=True, exist_ok=True)
+        # Thư mục logs đã được tạo khi startup, nhưng vẫn thử tạo lại nếu cần
+        try:
+            log_dir = Path(__file__).resolve().parent / "logs" / "feedback_import"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            # Đảm bảo có quyền ghi
+            import os
+            os.chmod(log_dir, 0o777)
+        except (PermissionError, OSError) as e:
+            # Fallback sang thư mục tạm nếu không có quyền
+            logger.warning(f"Không thể tạo thư mục logs: {e}. Dùng thư mục tạm.")
+            import tempfile
+            log_dir = Path(tempfile.gettempdir()) / "feedback_import_logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
         log_file_path = log_dir / f"errors_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
         with log_file_path.open("w", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile)
@@ -1507,8 +1518,19 @@ async def import_feedbacks_simple_from_excel(file: UploadFile = File(...)):
     # Ghi log file nếu có lỗi
     log_file_path = None
     if error_rows:
-        log_dir = Path(__file__).resolve().parent / "logs" / "feedback_import"
-        log_dir.mkdir(parents=True, exist_ok=True)
+        # Thư mục logs đã được tạo khi startup, nhưng vẫn thử tạo lại nếu cần
+        try:
+            log_dir = Path(__file__).resolve().parent / "logs" / "feedback_import"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            # Đảm bảo có quyền ghi
+            import os
+            os.chmod(log_dir, 0o777)
+        except (PermissionError, OSError) as e:
+            # Fallback sang thư mục tạm nếu không có quyền
+            logger.warning(f"Không thể tạo thư mục logs: {e}. Dùng thư mục tạm.")
+            import tempfile
+            log_dir = Path(tempfile.gettempdir()) / "feedback_import_logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
         log_file_path = log_dir / f"errors_simple_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
         with log_file_path.open("w", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile)
