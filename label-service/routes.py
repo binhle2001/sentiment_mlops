@@ -256,14 +256,34 @@ async def sync_labels(
                 data = json.loads(content.decode('utf-8'))
                 # Hỗ trợ cả format có "labels" key hoặc trực tiếp là array
                 if isinstance(data, dict) and "labels" in data:
-                    labels_to_sync = data["labels"]
+                    labels_data = data["labels"]
                 elif isinstance(data, list):
-                    labels_to_sync = data
+                    labels_data = data
                 else:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="File JSON không đúng định dạng. Cần có key 'labels' hoặc là array"
                     )
+                
+                # Chuyển đổi dicts thành LabelSyncItem objects
+                labels_to_sync = []
+                for label_dict in labels_data:
+                    try:
+                        # Parse updated_at nếu có (có thể là string ISO format)
+                        if "updated_at" in label_dict and label_dict["updated_at"]:
+                            if isinstance(label_dict["updated_at"], str):
+                                try:
+                                    label_dict["updated_at"] = datetime.fromisoformat(label_dict["updated_at"].replace('Z', '+00:00'))
+                                except ValueError:
+                                    # Fallback nếu format không đúng
+                                    label_dict["updated_at"] = None
+                        label_item = LabelSyncItem(**label_dict)
+                        labels_to_sync.append(label_item)
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Label không hợp lệ: {label_dict.get('id', 'unknown')} - {str(e)}"
+                        )
             except json.JSONDecodeError as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
