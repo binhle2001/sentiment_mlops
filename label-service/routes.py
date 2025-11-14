@@ -1220,20 +1220,26 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
                             f"Level3 '{level3_value}' không thuộc Level2 '{level2_label['name']}'"
                         )
 
-            # Nếu có lỗi về sentiment, bỏ qua dòng này
+            # Nếu có lỗi về sentiment, tự động phân loại thay vì bỏ qua
+            sentiment_label_value = None
+            confidence_score = 1.0
+            
             if sentiment_enum is None:
-                error_rows.append(
-                    {
-                        "row_index": row_idx,
-                        "content": content_value,
-                        "sentiment": sentiment_value,
-                        "level1": level1_value,
-                        "level2": level2_value,
-                        "level3": level3_value,
-                        "errors": row_errors or ["Không xác định được sentiment"],
-                    }
-                )
-                continue
+                # Tự động phân loại sentiment
+                try:
+                    logger.info(f"Row {row_idx}: Tự động phân loại sentiment cho feedback")
+                    sentiment_result = await call_sentiment_service(content_value)
+                    sentiment_label_value = sentiment_result.get("label")
+                    confidence_score = sentiment_result.get("score", 1.0)
+                    if sentiment_label_value:
+                        logger.info(f"Row {row_idx}: Đã phân loại sentiment: {sentiment_label_value}")
+                except Exception as e:
+                    logger.error(f"Row {row_idx}: Lỗi khi phân loại sentiment: {e}")
+                    row_errors.append(f"Không thể phân loại sentiment: {str(e)}")
+                    # Dùng giá trị mặc định nếu không phân loại được
+                    sentiment_label_value = SentimentLabel.NEUTRAL.value
+            else:
+                sentiment_label_value = sentiment_enum.value
 
             feedback_data = FeedbackSentimentCreate(
                 feedback_text=content_value,
@@ -1245,17 +1251,18 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
             level3_id = level3_label["id"] if level3_label else None
             
             # Kiểm tra xem có đủ nhãn và tất cả đều hợp lệ không
-            # Cần có đủ cả 3 nhãn (level1, level2, level3) và không có lỗi nào
+            # Cần có đủ cả 3 nhãn (level1, level2, level3) và không có lỗi nào về label
             has_all_labels = level1_id is not None and level2_id is not None and level3_id is not None
             has_no_label_errors = not any("Level" in error or "level" in error.lower() for error in row_errors)
+            has_valid_sentiment = sentiment_enum is not None  # Sentiment từ Excel hợp lệ
             
-            if has_all_labels and has_no_label_errors:
+            if has_all_labels and has_no_label_errors and has_valid_sentiment:
                 # Có đủ nhãn và tất cả đều hợp lệ -> đã được xác nhận (is_model_confirmed = True)
                 is_confirmed = True
                 logger.info(f"Row {row_idx}: Có đủ nhãn hợp lệ, lưu với is_model_confirmed = True")
             else:
-                # Thiếu nhãn hoặc có lỗi về nhãn -> tự động phân loại lại
-                logger.info(f"Row {row_idx}: Thiếu nhãn hoặc nhãn không hợp lệ, sẽ tự động phân loại intent")
+                # Thiếu nhãn, có lỗi về nhãn, hoặc có lỗi về sentiment -> tự động phân loại lại intent
+                logger.info(f"Row {row_idx}: Có lỗi hoặc thiếu nhãn, sẽ tự động phân loại intent")
                 intent_result = await _classify_intent_for_feedback(content_value)
                 if intent_result:
                     level1_id = intent_result['level1_id']
@@ -1270,17 +1277,32 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
                     level3_id = None
                     is_confirmed = False
 
+            # Luôn import vào database, kể cả có lỗi
             FeedbackSentimentCRUD.create(
                 conn,
                 feedback_data,
-                sentiment_enum.value,
-                confidence_score=1.0,
+                sentiment_label_value,
+                confidence_score=confidence_score,
                 level1_id=level1_id,
                 level2_id=level2_id,
                 level3_id=level3_id,
                 is_model_confirmed=is_confirmed,
             )
             inserted += 1
+            
+            # Ghi lỗi vào error_rows để log (nếu có)
+            if row_errors:
+                error_rows.append(
+                    {
+                        "row_index": row_idx,
+                        "content": content_value,
+                        "sentiment": sentiment_value,
+                        "level1": level1_value,
+                        "level2": level2_value,
+                        "level3": level3_value,
+                        "errors": row_errors,
+                    }
+                )
 
     log_file_path = None
     if error_rows:
