@@ -143,6 +143,11 @@ export const feedbackAPI = {
       },
     });
   },
+
+  // Auto-classify intents for feedbacks without intent
+  autoClassifyIntents: () => {
+    return api.post('/feedbacks/auto-classify-intents');
+  },
 };
 
 export default api;

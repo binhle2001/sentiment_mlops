@@ -1586,6 +1586,91 @@ async def analyze_feedback_intents(feedback_id: UUID):
         )
 
 
+@router.post(
+    "/feedbacks/auto-classify-intents",
+    summary="Tự động phân loại intent cho các feedback chưa có intent"
+)
+async def auto_classify_feedbacks_without_intents():
+    """
+    Tự động phân loại intent cho tất cả feedback chưa có intent (level1_id IS NULL).
+    Quét toàn bộ database và phân loại intent cho các feedback chưa được phân loại.
+    Các feedback sau khi được phân loại sẽ có is_model_confirmed = False (chờ xác nhận).
+    """
+    try:
+        with get_db() as conn:
+            from database import execute_query
+            
+            # Lấy tất cả feedback chưa có intent
+            results = execute_query(
+                conn,
+                """
+                SELECT id, feedback_text 
+                FROM feedback_sentiments 
+                WHERE level1_id IS NULL
+                ORDER BY created_at DESC
+                """,
+                fetch="all"
+            )
+            
+            feedbacks = [dict(row) for row in results] if results else []
+            
+            if not feedbacks:
+                return {
+                    "status": "success",
+                    "message": "Không có feedback nào cần phân loại",
+                    "total": 0,
+                    "classified": 0,
+                    "failed": 0
+                }
+            
+            logger.info(f"Bắt đầu tự động phân loại intent cho {len(feedbacks)} feedback")
+            
+            classified = 0
+            failed = 0
+            
+            for feedback in feedbacks:
+                try:
+                    feedback_id = feedback['id']
+                    feedback_text = feedback['feedback_text']
+                    
+                    # Phân loại intent
+                    intent_result = await _classify_intent_for_feedback(feedback_text, feedback_id)
+                    
+                    if intent_result:
+                        # Cập nhật feedback với intent mới, is_model_confirmed = False
+                        update_data = FeedbackSentimentUpdate(
+                            level1_id=intent_result['level1_id'],
+                            level2_id=intent_result['level2_id'],
+                            level3_id=intent_result['level3_id'],
+                            is_model_confirmed=False
+                        )
+                        FeedbackSentimentCRUD.update(conn, feedback_id, update_data)
+                        classified += 1
+                        logger.info(f"Đã phân loại intent cho feedback {feedback_id}")
+                    else:
+                        failed += 1
+                        logger.warning(f"Không thể phân loại intent cho feedback {feedback_id}")
+                        
+                except Exception as e:
+                    failed += 1
+                    logger.error(f"Lỗi khi phân loại feedback {feedback.get('id')}: {e}", exc_info=True)
+            
+            return {
+                "status": "success",
+                "message": f"Đã phân loại {classified} feedback, {failed} feedback thất bại",
+                "total": len(feedbacks),
+                "classified": classified,
+                "failed": failed
+            }
+    
+    except Exception as e:
+        logger.error(f"Error auto-classifying feedbacks: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Không thể tự động phân loại feedback: {str(e)}"
+        )
+
+
 @router.get(
     "/feedbacks/{feedback_id}/intents",
     response_model=FeedbackIntentResponse,

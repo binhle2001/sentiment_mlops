@@ -26,6 +26,7 @@ import {
   ReloadOutlined,
   CheckOutlined,
   UploadOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { feedbackAPI, labelAPI } from '../services/api';
 
@@ -56,6 +57,7 @@ const FeedbackSentiment = () => {
   const [confirmingId, setConfirmingId] = useState(null);
   const [importing, setImporting] = useState(false);
   const [importingSimple, setImportingSimple] = useState(false);
+  const [autoClassifying, setAutoClassifying] = useState(false);
 
   const loadLabelTree = async () => {
     try {
@@ -331,6 +333,23 @@ const FeedbackSentiment = () => {
       handleImportExcelSimple(file);
       return false;
     },
+  };
+
+  const handleAutoClassify = async () => {
+    try {
+      setAutoClassifying(true);
+      const result = await feedbackAPI.autoClassifyIntents();
+      message.success(
+        `Đã tự động phân loại ${result.classified} feedback, ${result.failed} feedback thất bại`
+      );
+      await fetchFeedbacks();
+    } catch (error) {
+      const detail = error?.response?.data?.detail || 'Không thể tự động phân loại intent';
+      message.error(detail);
+      console.error('Error auto-classifying intents:', error);
+    } finally {
+      setAutoClassifying(false);
+    }
   };
 
   const handleSubmit = async (values) => {
@@ -703,6 +722,14 @@ const FeedbackSentiment = () => {
                 Import Excel
               </Button>
             </Upload>
+            <Button
+              icon={<ThunderboltOutlined />}
+              onClick={handleAutoClassify}
+              loading={autoClassifying}
+              type="default"
+            >
+              Tự động phân loại Intent
+            </Button>
             <Button
               icon={<ReloadOutlined />}
               onClick={fetchFeedbacks}
