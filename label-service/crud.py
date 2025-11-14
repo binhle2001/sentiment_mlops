@@ -687,11 +687,7 @@ class FeedbackSentimentCRUD:
             if is_confirmed != existing.get("is_model_confirmed"):
                 update_fields.append("is_model_confirmed = %s")
                 params.append(is_confirmed)
-        elif should_reset_confirmation:
-            # Chỉ reset về False nếu đang từ True và có thay đổi
-            # (logic cũ - giữ lại để tương thích với các trường hợp đặc biệt)
-            update_fields.append("is_model_confirmed = %s")
-            params.append(False)
+        # Không tự động reset về False nữa - để route tự quyết định
 
         if not update_fields:
             logger.info("No changes detected for feedback %s; skipping update", feedback_id)

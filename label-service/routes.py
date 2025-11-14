@@ -919,7 +919,7 @@ async def create_feedback_sentiment(feedback_data: FeedbackSentimentCreate):
 def update_feedback_sentiment(feedback_id: UUID, update_data: FeedbackSentimentUpdate):
     """Manually update sentiment label and/or intent hierarchy for an existing feedback.
     
-    Khi sửa bằng tay qua UI, mặc định is_model_confirmed = True (đã được xác nhận).
+    Khi sửa bằng tay qua API PUT, tự động set is_model_confirmed = True (đã xác nhận).
     """
     try:
         with get_db() as conn:
@@ -937,7 +937,7 @@ def update_feedback_sentiment(feedback_id: UUID, update_data: FeedbackSentimentU
             has_intent_change = any(key in update_dict for key in ["level1_id", "level2_id", "level3_id"])
             
             if (has_sentiment_change or has_intent_change) and "is_model_confirmed" not in update_dict:
-                # Sửa bằng tay -> mặc định đã xác nhận
+                # Sửa bằng tay qua API -> tự động xác nhận
                 update_data.is_model_confirmed = True
             
             updated_feedback = FeedbackSentimentCRUD.update(conn, feedback_id, update_data)
