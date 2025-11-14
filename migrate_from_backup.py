@@ -12,7 +12,7 @@ Steps performed:
     4. Import data from the provided Excel backup file.
 
 Requirements:
-    pip install pandas openpyxl psycopg2-binary python-dotenv
+    pip install pandas openpyxl psycopg2-binary python-dotenv httpx
 """
 from __future__ import annotations
 
@@ -316,11 +316,47 @@ def import_feedback_sentiments(conn: psycopg2.extensions.connection, df: Optiona
 
 def seed_label_embeddings(conn: psycopg2.extensions.connection) -> None:
     """Seed embeddings cho tất cả labels sau khi import."""
-    # Lấy embedding service URL từ env hoặc default
-    embedding_service_url = os.getenv(
-        "EMBEDDING_SERVICE_URL", 
-        "http://localhost:8000/api/v1"
-    )
+    # Lấy embedding service URL từ env hoặc thử các URL phổ biến
+    embedding_service_url = os.getenv("EMBEDDING_SERVICE_URL")
+    
+    # Thử các URL phổ biến nếu không có trong env
+    possible_urls = [
+        embedding_service_url,
+        "http://embedding-service:8000/api/v1",  # Docker network
+        "http://localhost:8000/api/v1",  # Local
+    ]
+    
+    # Tìm URL hoạt động
+    working_url = None
+    for url in possible_urls:
+        if not url:
+            continue
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                # Test connection với health check endpoint
+                # URL có thể là http://embedding-service:8000/api/v1 hoặc http://localhost:8000/api/v1
+                base_url = url.replace('/encode', '').rstrip('/')
+                health_url = f"{base_url}/health"
+                test_response = client.get(health_url, timeout=5.0)
+                if test_response.status_code == 200:
+                    working_url = url
+                    break
+        except Exception:
+            continue
+    
+    if not working_url:
+        print("   ⚠️  Không thể kết nối đến embedding service.")
+        print("   💡 Có thể:")
+        print("      - Embedding service chưa chạy")
+        print("      - URL không đúng (kiểm tra EMBEDDING_SERVICE_URL trong .env)")
+        print("      - Nếu chạy trong Docker, dùng: http://embedding-service:8000/api/v1")
+        print("      - Nếu chạy local, dùng: http://localhost:8000/api/v1")
+        print("   💡 Bạn có thể seed embeddings sau bằng:")
+        print("      - POST /admin/seed-label-embeddings")
+        print("      - hoặc: python seed_data.py --labels-only")
+        return
+    
+    print(f"   🔗 Kết nối embedding service: {working_url}")
     
     # Lấy tất cả labels
     with conn.cursor() as cur:
@@ -331,8 +367,12 @@ def seed_label_embeddings(conn: psycopg2.extensions.connection) -> None:
         print("   ℹ️  Không có labels để seed embeddings.")
         return
     
+    print(f"   📋 Tìm thấy {len(labels)} labels cần seed embeddings...")
+    
     processed = 0
     failed = 0
+    consecutive_failures = 0
+    max_consecutive_failures = 5
     
     for label_id, name, description in labels:
         try:
@@ -344,7 +384,7 @@ def seed_label_embeddings(conn: psycopg2.extensions.connection) -> None:
             # Gọi embedding service
             with httpx.Client(timeout=30.0) as client:
                 response = client.post(
-                    f"{embedding_service_url}/encode",
+                    f"{working_url}/encode",
                     json={"text": text}
                 )
                 response.raise_for_status()
@@ -354,6 +394,10 @@ def seed_label_embeddings(conn: psycopg2.extensions.connection) -> None:
             if not embedding:
                 print(f"   ⚠️  Không nhận được embedding cho label {label_id} ({name})")
                 failed += 1
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    print(f"   ⛔ Quá nhiều lỗi liên tiếp ({consecutive_failures}), dừng seed embeddings.")
+                    break
                 continue
             
             # Update embedding vào database
@@ -364,15 +408,26 @@ def seed_label_embeddings(conn: psycopg2.extensions.connection) -> None:
                 )
             
             processed += 1
+            consecutive_failures = 0  # Reset counter on success
             if processed % 10 == 0:
                 print(f"   📊 Đã xử lý {processed}/{len(labels)} labels...")
         
         except Exception as e:
-            print(f"   ⚠️  Lỗi khi seed embedding cho label {label_id}: {e}")
             failed += 1
+            consecutive_failures += 1
+            if consecutive_failures <= 3:  # Chỉ hiển thị 3 lỗi đầu
+                print(f"   ⚠️  Lỗi khi seed embedding cho label {label_id}: {e}")
+            elif consecutive_failures == 4:
+                print(f"   ⚠️  ... (đang gặp lỗi liên tiếp)")
+            if consecutive_failures >= max_consecutive_failures:
+                print(f"   ⛔ Quá nhiều lỗi liên tiếp ({consecutive_failures}), dừng seed embeddings.")
+                break
     
     conn.commit()
-    print(f"   ✅ Đã seed embeddings: {processed} thành công, {failed} thất bại")
+    if processed > 0:
+        print(f"   ✅ Đã seed embeddings: {processed} thành công, {failed} thất bại")
+    else:
+        print(f"   ❌ Không thể seed embeddings: {failed} thất bại")
 
 
 def import_feedback_intents(conn: psycopg2.extensions.connection, df: Optional[pd.DataFrame]) -> int:
@@ -444,6 +499,11 @@ def main() -> None:
         default="scripts/backups",
         help="Thư mục chứa các file backup (dùng khi không chỉ định --backup)",
     )
+    parser.add_argument(
+        "--skip-embeddings",
+        action="store_true",
+        help="Bỏ qua bước seed embeddings cho labels",
+    )
     args = parser.parse_args()
 
     if args.backup:
@@ -485,14 +545,17 @@ def main() -> None:
 
         conn.commit()
         
-        # Seed embeddings cho labels sau khi import
-        print("\n🔄 Đang seed embeddings cho labels...")
-        try:
-            seed_label_embeddings(conn)
-            print("   ✅ Đã seed embeddings cho labels.")
-        except Exception as e:
-            print(f"   ⚠️  Lỗi khi seed embeddings: {e}")
-            print("   💡 Bạn có thể chạy lại sau bằng: POST /admin/seed-label-embeddings")
+        # Seed embeddings cho labels sau khi import (nếu không skip)
+        if not args.skip_embeddings:
+            print("\n🔄 Đang seed embeddings cho labels...")
+            try:
+                seed_label_embeddings(conn)
+            except Exception as e:
+                print(f"   ⚠️  Lỗi khi seed embeddings: {e}")
+                print("   💡 Bạn có thể chạy lại sau bằng: POST /admin/seed-label-embeddings")
+        else:
+            print("\n⏭️  Bỏ qua seed embeddings (--skip-embeddings được chỉ định)")
+            print("   💡 Chạy sau bằng: POST /admin/seed-label-embeddings hoặc python seed_data.py --labels-only")
 
         print("\n🎉 Hoàn tất khôi phục database!")
     except Exception as exc:
