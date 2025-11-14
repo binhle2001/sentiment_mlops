@@ -1117,6 +1117,8 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
         str(cell).strip().lower() if cell is not None else ""
         for cell in header_row
     ]
+    print(f"Normalized headers found in Excel file: {normalized_headers}")
+
     required_headers = ["content", "sentiment", "level1", "level2", "level3"]
     missing_columns = [col for col in required_headers if col not in normalized_headers]
     if missing_columns:
@@ -1165,6 +1167,8 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
             raw_level1 = _get_value("level1")
             raw_level2 = _get_value("level2")
             raw_level3 = _get_value("level3")
+
+            print(f"Row {row_idx}: raw_content='{raw_content}', raw_sentiment='{raw_sentiment}', raw_level1='{raw_level1}', raw_level2='{raw_level2}', raw_level3='{raw_level3}'")
 
             content_value = _normalize(raw_content)
             sentiment_value = _normalize(raw_sentiment)
