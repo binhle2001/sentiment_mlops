@@ -315,119 +315,80 @@ def import_feedback_sentiments(conn: psycopg2.extensions.connection, df: Optiona
 
 
 def seed_label_embeddings(conn: psycopg2.extensions.connection) -> None:
-    """Seed embeddings cho tất cả labels sau khi import."""
-    # Lấy embedding service URL từ env hoặc thử các URL phổ biến
-    embedding_service_url = os.getenv("EMBEDDING_SERVICE_URL")
+    """Seed embeddings cho tất cả labels sau khi import.
     
-    # Thử các URL phổ biến nếu không có trong env
+    Gọi API của label-service để seed embeddings, vì label-service đã biết cách
+    kết nối đến embedding-service (trong Docker network hoặc local).
+    """
+    # Lấy label-service URL từ env hoặc thử các URL phổ biến
+    label_service_url = os.getenv("LABEL_SERVICE_URL")
+    label_backend_port = os.getenv("LABEL_BACKEND_PORT", "8001")
+    
+    # Thử các URL phổ biến cho label-service
     possible_urls = [
-        embedding_service_url,
-        "http://embedding-service:8000/api/v1",  # Docker network
-        "http://localhost:8000/api/v1",  # Local
+        f"http://localhost:{label_backend_port}/api/v1",  # Local machine với external port
+        label_service_url,  # Từ .env nếu có
+        "http://localhost:8001/api/v1",  # Fallback
     ]
     
-    # Tìm URL hoạt động
+    # Tìm URL hoạt động của label-service
     working_url = None
     for url in possible_urls:
         if not url:
             continue
         try:
             with httpx.Client(timeout=5.0) as client:
-                # Test connection với health check endpoint
-                # URL có thể là http://embedding-service:8000/api/v1 hoặc http://localhost:8000/api/v1
-                base_url = url.replace('/encode', '').rstrip('/')
-                health_url = f"{base_url}/health"
+                # Test connection với health check
+                health_url = f"{url.rstrip('/api/v1')}/api/v1/health" if '/api/v1' in url else f"{url}/api/v1/health"
                 test_response = client.get(health_url, timeout=5.0)
                 if test_response.status_code == 200:
-                    working_url = url
+                    working_url = url.rstrip('/api/v1') if url.endswith('/api/v1') else url
                     break
         except Exception:
             continue
     
     if not working_url:
-        print("   ⚠️  Không thể kết nối đến embedding service.")
+        print("   ⚠️  Không thể kết nối đến label-service.")
         print("   💡 Có thể:")
-        print("      - Embedding service chưa chạy")
-        print("      - URL không đúng (kiểm tra EMBEDDING_SERVICE_URL trong .env)")
-        print("      - Nếu chạy trong Docker, dùng: http://embedding-service:8000/api/v1")
-        print("      - Nếu chạy local, dùng: http://localhost:8000/api/v1")
+        print("      - Label-service chưa chạy")
+        print("      - Kiểm tra LABEL_BACKEND_PORT trong .env (mặc định: 8001)")
         print("   💡 Bạn có thể seed embeddings sau bằng:")
-        print("      - POST /admin/seed-label-embeddings")
+        print("      - POST http://localhost:8001/api/v1/admin/seed-label-embeddings")
         print("      - hoặc: python seed_data.py --labels-only")
         return
     
-    print(f"   🔗 Kết nối embedding service: {working_url}")
+    print(f"   🔗 Kết nối label-service: {working_url}")
+    print("   📡 Gọi API để seed embeddings...")
     
-    # Lấy tất cả labels
-    with conn.cursor() as cur:
-        cur.execute("SELECT id, name, description FROM labels ORDER BY level, id")
-        labels = cur.fetchall()
-    
-    if not labels:
-        print("   ℹ️  Không có labels để seed embeddings.")
-        return
-    
-    print(f"   📋 Tìm thấy {len(labels)} labels cần seed embeddings...")
-    
-    processed = 0
-    failed = 0
-    consecutive_failures = 0
-    max_consecutive_failures = 5
-    
-    for label_id, name, description in labels:
-        try:
-            # Tạo text cho embedding
-            text = name
-            if description and not pd.isna(description):
-                text = f"{name}. {description}"
+    try:
+        with httpx.Client(timeout=600.0) as client:  # 10 phút timeout cho nhiều labels
+            response = client.post(
+                f"{working_url}/api/v1/admin/seed-label-embeddings",
+                timeout=600.0
+            )
+            response.raise_for_status()
+            result = response.json()
             
-            # Gọi embedding service
-            with httpx.Client(timeout=30.0) as client:
-                response = client.post(
-                    f"{working_url}/encode",
-                    json={"text": text}
-                )
-                response.raise_for_status()
-                result = response.json()
-                embedding = result.get("embedding", [])
+            total = result.get("total", 0)
+            processed = result.get("processed", 0)
+            failed = result.get("failed", 0)
             
-            if not embedding:
-                print(f"   ⚠️  Không nhận được embedding cho label {label_id} ({name})")
-                failed += 1
-                consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
-                    print(f"   ⛔ Quá nhiều lỗi liên tiếp ({consecutive_failures}), dừng seed embeddings.")
-                    break
-                continue
-            
-            # Update embedding vào database
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE labels SET embedding = %s WHERE id = %s",
-                    (embedding, label_id)
-                )
-            
-            processed += 1
-            consecutive_failures = 0  # Reset counter on success
-            if processed % 10 == 0:
-                print(f"   📊 Đã xử lý {processed}/{len(labels)} labels...")
-        
-        except Exception as e:
-            failed += 1
-            consecutive_failures += 1
-            if consecutive_failures <= 3:  # Chỉ hiển thị 3 lỗi đầu
-                print(f"   ⚠️  Lỗi khi seed embedding cho label {label_id}: {e}")
-            elif consecutive_failures == 4:
-                print(f"   ⚠️  ... (đang gặp lỗi liên tiếp)")
-            if consecutive_failures >= max_consecutive_failures:
-                print(f"   ⛔ Quá nhiều lỗi liên tiếp ({consecutive_failures}), dừng seed embeddings.")
-                break
-    
-    conn.commit()
-    if processed > 0:
-        print(f"   ✅ Đã seed embeddings: {processed} thành công, {failed} thất bại")
-    else:
-        print(f"   ❌ Không thể seed embeddings: {failed} thất bại")
+            if processed > 0:
+                print(f"   ✅ Đã seed embeddings: {processed}/{total} thành công, {failed} thất bại")
+            else:
+                print(f"   ⚠️  Không seed được embeddings: {failed} thất bại")
+                if total == 0:
+                    print("   ℹ️  Không có labels để seed embeddings.")
+    except httpx.HTTPError as e:
+        print(f"   ⚠️  Lỗi khi gọi API seed embeddings: {e}")
+        print("   💡 Bạn có thể seed embeddings sau bằng:")
+        print("      - POST http://localhost:8001/api/v1/admin/seed-label-embeddings")
+        print("      - hoặc: python seed_data.py --labels-only")
+    except Exception as e:
+        print(f"   ⚠️  Lỗi không mong đợi: {e}")
+        print("   💡 Bạn có thể seed embeddings sau bằng:")
+        print("      - POST http://localhost:8001/api/v1/admin/seed-label-embeddings")
+        print("      - hoặc: python seed_data.py --labels-only")
 
 
 def import_feedback_intents(conn: psycopg2.extensions.connection, df: Optional[pd.DataFrame]) -> int:
