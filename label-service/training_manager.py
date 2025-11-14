@@ -1,343 +1,167 @@
 import asyncio
 import logging
-import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime
 
 import httpx
 
-from config import Settings
-from database import execute_query, get_db
+from config import get_settings
+from database import get_db
+from training_log import ensure_training_log_table, get_last_successful_run
 
 logger = logging.getLogger(__name__)
-
-ModelType = str
-
-
-@dataclass
-class ModelState:
-    confirmed: int = 0
-    relabel: int = 0
-    last_event_at: Optional[float] = None
-    samples: List[Dict[str, Any]] = field(default_factory=list)
-    training: bool = False
-
-    def reset(self) -> None:
-        self.confirmed = 0
-        self.relabel = 0
-        self.last_event_at = None
-        self.samples.clear()
-        self.training = False
+settings = get_settings()
 
 
 class TrainingManager:
-    """Quản lý trigger huấn luyện cho sentiment và intent."""
+    """Quản lý và kích hoạt các quy trình huấn luyện theo kịch bản MLOps."""
 
-    SAMPLE_BUFFER_SIZE = 500
-
-    def __init__(self, settings: Settings):
-        self.settings = settings
-        self._lock = asyncio.Lock()
-        self._model_states: Dict[ModelType, ModelState] = {
-            "intent": ModelState(),
-            "sentiment": ModelState(),
-        }
-        self._current_trigger: Optional[ModelType] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._runner_task: Optional[asyncio.Task] = None
+    def __init__(self, check_interval_seconds: int = 300, record_threshold: int = 200):
+        self.check_interval = check_interval_seconds
+        self.record_threshold = record_threshold
+        self._task: asyncio.Task = None
         self._running = False
 
-    async def start(self) -> None:
-        if not self.settings.enable_training_trigger:
-            logger.info("Training trigger is disabled via configuration.")
+    async def start(self):
+        """Khởi động vòng lặp kiểm tra định kỳ."""
+        if self._running:
             return
+        logger.info(
+            f"Khởi động TrainingManager: kiểm tra mỗi {self.check_interval} giây, ngưỡng {self.record_threshold} bản ghi."
+        )
+        # Đảm bảo bảng log tồn tại khi khởi động
+        with get_db() as conn:
+            ensure_training_log_table(conn)
+            conn.commit()
 
-        if self._runner_task is not None:
-            return
-
-        self._loop = asyncio.get_running_loop()
         self._running = True
-        self._runner_task = asyncio.create_task(self._run_loop(), name="training-trigger-loop")
-        logger.info("Training manager started.")
+        self._task = asyncio.create_task(self._run_check_loop())
 
-    async def shutdown(self) -> None:
+    async def stop(self):
+        """Dừng vòng lặp kiểm tra."""
         self._running = False
-        if self._runner_task:
-            self._runner_task.cancel()
+        if self._task:
+            self._task.cancel()
             try:
-                await self._runner_task
+                await self._task
             except asyncio.CancelledError:
                 pass
-            self._runner_task = None
-        logger.info("Training manager stopped.")
+            logger.info("Đã dừng TrainingManager.")
 
-    async def get_status(self) -> Dict[str, Any]:
-        async with self._lock:
-            return {
-                "current_trigger": self._current_trigger,
-                "models": {
-                    model: {
-                        "confirmed": state.confirmed,
-                        "relabel": state.relabel,
-                        "last_event_at": state.last_event_at,
-                        "training": state.training,
-                        "samples_buffer": len(state.samples),
-                    }
-                    for model, state in self._model_states.items()
-                },
-            }
+    async def _run_check_loop(self):
+        """Vòng lặp chính, kiểm tra định kỳ."""
+        while self._running:
+            try:
+                await self.check_and_trigger_all(triggered_by="record_threshold")
+            except Exception as e:
+                logger.error(f"Lỗi trong vòng lặp kiểm tra của TrainingManager: {e}", exc_info=True)
+            await asyncio.sleep(self.check_interval)
 
-    def record_confirm(self, model: ModelType, feedback: Optional[Dict[str, Any]] = None) -> None:
-        if not self.settings.enable_training_trigger:
-            return
-        if self._loop is None:
-            logger.debug("Attempt to record confirm before training manager started.")
-            return
-        asyncio.run_coroutine_threadsafe(
-            self._record_event("confirm", model, feedback),
-            self._loop,
-        )
+    async def check_and_trigger_all(self, triggered_by: str):
+        """Kiểm tra và kích hoạt huấn luyện cho tất cả các service nếu cần."""
+        logger.info(f"Đang kiểm tra điều kiện huấn luyện (trigger: {triggered_by})...")
+        # Hiện tại chỉ có một nguồn dữ liệu chung, nên trigger cả hai cùng lúc
+        await self.check_and_trigger_service("sentiment", triggered_by)
+        await self.check_and_trigger_service("embedding", triggered_by)
 
-    def record_relabel(self, model: ModelType, feedback: Optional[Dict[str, Any]] = None) -> None:
-        if not self.settings.enable_training_trigger:
-            return
-        if self._loop is None:
-            logger.debug("Attempt to record relabel before training manager started.")
-            return
-        asyncio.run_coroutine_threadsafe(
-            self._record_event("relabel", model, feedback),
-            self._loop,
-        )
-
-    async def record_confirm_async(self, model: ModelType, feedback: Optional[Dict[str, Any]] = None) -> None:
-        if not self.settings.enable_training_trigger:
-            return
-        await self._record_event("confirm", model, feedback)
-
-    async def record_relabel_async(self, model: ModelType, feedback: Optional[Dict[str, Any]] = None) -> None:
-        if not self.settings.enable_training_trigger:
-            return
-        await self._record_event("relabel", model, feedback)
-
-    async def _record_event(self, event_type: str, model: ModelType, feedback: Optional[Dict[str, Any]]) -> None:
-        if model not in self._model_states:
-            logger.warning("Unknown model type '%s' passed to training manager.", model)
-            return
-
-        sample: Optional[Dict[str, Any]] = None
-        if model == "intent" and feedback:
-            sample = await asyncio.get_running_loop().run_in_executor(
-                None,
-                self._build_intent_sample,
-                feedback,
-            )
-
-        async with self._lock:
-            state = self._model_states[model]
-            if event_type == "confirm":
-                state.confirmed += 1
-            elif event_type == "relabel":
-                state.relabel += 1
-
-            now = time.monotonic()
-            state.last_event_at = now
-
-            if sample:
-                state.samples.append(sample)
-                if len(state.samples) > self.SAMPLE_BUFFER_SIZE:
-                    state.samples = state.samples[-self.SAMPLE_BUFFER_SIZE :]
-
-            if self._current_trigger is None:
-                self._current_trigger = model
-            logger.debug(
-                "Recorded %s for %s: confirmed=%s, relabel=%s",
-                event_type,
-                model,
-                state.confirmed,
-                state.relabel,
-            )
-
-    async def _run_loop(self) -> None:
-        interval = max(1, self.settings.training_check_interval_seconds)
-        try:
-            while self._running:
-                await asyncio.sleep(interval)
-                await self._tick()
-        except asyncio.CancelledError:
-            logger.debug("Training loop cancelled.")
-        except Exception:  # pragma: no cover - defensive
-            logger.exception("Unexpected error inside training manager loop.")
-
-    async def _tick(self) -> None:
-        if not self.settings.enable_training_trigger:
-            return
-
-        model: Optional[ModelType] = None
-        state_snapshot: Optional[ModelState] = None
-
-        async with self._lock:
-            model = self._current_trigger or self._choose_next_model_locked()
-            if model is None:
-                return
-
-            state = self._model_states[model]
-            if state.training:
-                return
-
-            if state.last_event_at is None:
-                return
-
-            idle_seconds = time.monotonic() - state.last_event_at
-            if idle_seconds < self.settings.training_idle_seconds:
-                return
-
-            thresholds = self._get_thresholds(model)
-            if state.confirmed <= thresholds["confirmed"] or state.relabel <= thresholds["relabel"]:
-                return
-
-            state.training = True
-            state_snapshot = ModelState(
-                confirmed=state.confirmed,
-                relabel=state.relabel,
-                last_event_at=state.last_event_at,
-                samples=list(state.samples),
-                training=True,
-            )
-            self._current_trigger = model
-            logger.info(
-                "Triggering %s training (confirmed=%s, relabel=%s, idle=%.1fs).",
-                model,
-                state.confirmed,
-                state.relabel,
-                idle_seconds,
-            )
-
-        if model is None or state_snapshot is None:
-            return
-
-        success = await self._call_training_service(model)
-
-        async with self._lock:
-            state = self._model_states[model]
-            if success:
-                logger.info("Training service for %s acknowledged trigger, resetting counters.", model)
-                state.reset()
-                self._current_trigger = self._choose_next_model_locked(exclude=model)
-            else:
-                logger.warning("Training service for %s failed, keeping counters for retry.", model)
-                state.training = False
-                state.last_event_at = time.monotonic()
-
-    async def _call_training_service(self, model: ModelType) -> bool:
-        url = (
-            self.settings.intent_training_service_url
-            if model == "intent"
-            else self.settings.sentiment_training_service_url
-        )
-
-        timeout = httpx.Timeout(30.0, connect=10.0)
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(url)
-            if response.status_code not in (200, 202):
-                logger.error(
-                    "Training service for %s returned %s: %s",
-                    model,
-                    response.status_code,
-                    response.text,
-                )
-                return False
-            return True
-        except httpx.HTTPError as exc:
-            logger.error("Error calling training service for %s: %s", model, exc)
-            return False
-
-    def _choose_next_model_locked(self, exclude: Optional[ModelType] = None) -> Optional[ModelType]:
-        candidates = []
-        for model, state in self._model_states.items():
-            if model == exclude:
-                continue
-            if state.last_event_at is None:
-                continue
-            if state.confirmed == 0 and state.relabel == 0:
-                continue
-            candidates.append((model, state.last_event_at))
-
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda item: item[1])
-        return candidates[0][0]
-
-    def _get_thresholds(self, model: ModelType) -> Dict[str, int]:
-        if model == "intent":
-            return {
-                "confirmed": self.settings.intent_confirm_threshold,
-                "relabel": self.settings.intent_relabel_threshold,
-            }
-        return {
-            "confirmed": self.settings.sentiment_confirm_threshold,
-            "relabel": self.settings.sentiment_relabel_threshold,
-        }
-
-    def _build_intent_sample(self, feedback: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        positive_label_id = feedback.get("level3_id")
-        if positive_label_id is None:
-            return None
-
-        negative_ids = self._pick_negative_labels(positive_label_id, limit=3)
-
-        return {
-            "feedback_id": str(feedback.get("id")),
-            "feedback_text": feedback.get("feedback_text"),
-            "positive_label_id": positive_label_id,
-            "positive_label_name": feedback.get("level3_name"),
-            "negative_label_ids": negative_ids,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-    def _pick_negative_labels(self, positive_label_id: int, limit: int = 3) -> List[int]:
+    def _count_new_confirmed_records(self, last_run_time: datetime | None) -> int:
+        """Đếm số bản ghi được xác nhận mới kể từ lần chạy cuối."""
         with get_db() as conn:
-            rows = execute_query(
-                conn,
+            with conn.cursor() as cur:
+                query = """
+                    SELECT COUNT(*)
+                    FROM feedback_sentiment
+                    WHERE is_model_confirmed = TRUE
                 """
-                SELECT id
-                FROM labels
-                WHERE level = 3 AND id <> %s
-                ORDER BY RANDOM()
-                LIMIT %s
-                """,
-                (positive_label_id, limit),
-                fetch="all",
+                params = []
+                if last_run_time:
+                    query += " AND updated_at > %s"
+                    params.append(last_run_time)
+
+                cur.execute(query, tuple(params))
+                count = cur.fetchone()[0]
+                return count
+
+    async def check_and_trigger_service(self, service_name: str, triggered_by: str):
+        """Kiểm tra và kích hoạt cho một service cụ thể."""
+        # Vì cả 2 model dùng chung data, ta chỉ cần check 1 lần và dùng chung last_run
+        # để tránh gọi DB nhiều lần.
+        last_run = get_last_successful_run(service_name)
+        new_records = self._count_new_confirmed_records(last_run)
+
+        logger.info(
+            f"Kiểm tra '{service_name}': {new_records} bản ghi mới được xác nhận kể từ {last_run or 'lần đầu'}."
+        )
+
+        should_trigger = False
+        if triggered_by == "new_label":
+            total_records = self._count_new_confirmed_records(None)
+            if total_records > self.record_threshold:
+                should_trigger = True
+                logger.info(f"Trigger '{service_name}' do có nhãn mới và tổng số bản ghi ({total_records}) > {self.record_threshold}")
+        elif new_records > self.record_threshold:
+            should_trigger = True
+            logger.info(f"Trigger '{service_name}' do số bản ghi mới ({new_records}) > {self.record_threshold}")
+
+        if should_trigger:
+            await self._trigger_training_api(service_name, triggered_by)
+
+    async def _trigger_training_api(self, service_name: str, triggered_by: str):
+        """Gọi API để bắt đầu huấn luyện."""
+        if service_name == "sentiment":
+            url = settings.sentiment_training_url
+        elif service_name == "embedding":
+            # Giả sử có setting cho embedding training url
+            url = settings.embedding_training_url
+        else:
+            logger.error(f"Tên service không hợp lệ: {service_name}")
+            return
+
+        if not url:
+            logger.warning(f"Không có URL cấu hình cho '{service_name}', không thể trigger.")
+            return
+
+        # Các service huấn luyện đều có endpoint /train
+        full_url = f"{url.rstrip('/')}/train"
+        logger.info(f"Gửi yêu cầu POST tới {full_url} để bắt đầu huấn luyện (trigger: {triggered_by})...")
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(full_url, json={"triggered_by": triggered_by})
+                response.raise_for_status()
+            logger.info(
+                f"Đã kích hoạt thành công huấn luyện cho '{service_name}'. Status: {response.status_code}, Response: {response.text}"
             )
-        return [row["id"] for row in rows] if rows else []
+        except httpx.RequestError as e:
+            logger.error(f"Lỗi khi gọi API huấn luyện cho '{service_name}': {e}")
+        except Exception as e:
+            logger.error(f"Lỗi không xác định khi trigger '{service_name}': {e}", exc_info=True)
 
 
-_manager_instance: Optional[TrainingManager] = None
+# Singleton pattern cho TrainingManager
+_training_manager_instance: TrainingManager | None = None
 _manager_lock = asyncio.Lock()
 
 
-async def init_training_manager(settings: Settings) -> TrainingManager:
-    global _manager_instance
+async def get_training_manager() -> TrainingManager:
+    """Lấy hoặc tạo instance của TrainingManager."""
+    global _training_manager_instance
     async with _manager_lock:
-        if _manager_instance is None:
-            manager = TrainingManager(settings)
-            await manager.start()
-            _manager_instance = manager
-    return _manager_instance
+        if _training_manager_instance is None:
+            _training_manager_instance = TrainingManager(
+                check_interval_seconds=settings.training_check_interval,
+                record_threshold=settings.training_record_threshold,
+            )
+    return _training_manager_instance
 
 
-async def shutdown_training_manager() -> None:
-    global _manager_instance
-    async with _manager_lock:
-        if _manager_instance is not None:
-            await _manager_instance.shutdown()
-            _manager_instance = None
+async def startup_manager():
+    """Khởi tạo và bắt đầu TrainingManager."""
+    manager = await get_training_manager()
+    await manager.start()
 
 
-def get_training_manager() -> TrainingManager:
-    if _manager_instance is None:
-        raise RuntimeError("Training manager has not been initialized yet.")
-    return _manager_instance
+async def shutdown_manager():
+    """Dừng TrainingManager."""
+    if _training_manager_instance:
+        await _training_manager_instance.stop()
 

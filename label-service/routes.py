@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 import httpx
-
-from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, BackgroundTasks
 from fastapi.responses import JSONResponse
 import json
 
@@ -49,45 +48,6 @@ settings = get_settings()
 router = APIRouter()
 
 
-def _notify_training_manager(existing: Optional[Dict[str, Any]], updated: Dict[str, Any]) -> None:
-    try:
-        manager = get_training_manager()
-    except RuntimeError:
-        logger.debug("Training manager not initialized yet; skip trigger notification.")
-        return
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Unexpected error acquiring training manager: %s", exc)
-        return
-
-    if not updated:
-        return
-
-    confirmed_before = bool(existing and existing.get("is_model_confirmed"))
-    confirmed_after = bool(updated.get("is_model_confirmed"))
-    if confirmed_after and not confirmed_before:
-        manager.record_confirm("intent", updated)
-        manager.record_confirm("sentiment", updated)
-
-    sentiment_changed = (
-        existing is not None
-        and existing.get("sentiment_label") != updated.get("sentiment_label")
-    )
-    if sentiment_changed:
-        manager.record_relabel("sentiment", updated)
-
-    intent_changed = False
-    if existing is not None:
-        intent_changed = any(
-            existing.get(key) != updated.get(key)
-            for key in ("level1_id", "level2_id", "level3_id")
-        )
-    else:
-        intent_changed = updated.get("level3_id") is not None
-
-    if intent_changed:
-        manager.record_relabel("intent", updated)
-
-
 @router.get("/health", response_model=HealthResponse, summary="Health check endpoint")
 def health_check():
     """Health check endpoint."""
@@ -121,7 +81,7 @@ async def training_status():
     status_code=status.HTTP_201_CREATED,
     summary="Create a new label"
 )
-def create_label(label_data: LabelCreate):
+async def create_label(label_data: LabelCreate, background_tasks: BackgroundTasks):
     """Create a new label in the hierarchy."""
     try:
         with get_db() as conn:
@@ -136,6 +96,11 @@ def create_label(label_data: LabelCreate):
                 )
             
             label = LabelCRUD.create(conn, label_data)
+
+            # Trigger training check in the background if enabled
+            if settings.enable_training_trigger:
+                background_tasks.add_task(trigger_training_on_new_label)
+
             return label
     except HTTPException:
         raise
@@ -147,6 +112,14 @@ def create_label(label_data: LabelCreate):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create label"
         )
+
+async def trigger_training_on_new_label():
+    """Background task to trigger training check after a new label is created."""
+    try:
+        manager = await get_training_manager()
+        await manager.check_and_trigger_all(triggered_by='new_label')
+    except Exception as e:
+        logger.error(f"Failed to trigger training on new label: {e}", exc_info=True)
 
 
 @router.post(
@@ -946,7 +919,6 @@ def update_feedback_sentiment(feedback_id: UUID, update_data: FeedbackSentimentU
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Feedback with id {feedback_id} not found"
                 )
-        _notify_training_manager(existing, updated_feedback)
         return updated_feedback
     except ValueError as e:
         raise HTTPException(
@@ -980,7 +952,6 @@ def confirm_feedback_sentiment(feedback_id: UUID):
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Feedback with id {feedback_id} not found"
                 )
-        _notify_training_manager(existing, updated_feedback)
         return updated_feedback
     except HTTPException:
         raise

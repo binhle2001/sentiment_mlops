@@ -1,14 +1,18 @@
 import logging
+import os
+import threading
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import get_settings
 from routes import router
 from schemas import HealthResponse
+from training_sentiment import TrainingConfig, train_sentiment_pipeline
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,14 +23,30 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def run_training():
+    """Hàm chạy huấn luyện trong một luồng riêng biệt."""
+    logger.info("Bắt đầu quá trình huấn luyện sentiment tự động...")
+    try:
+        config = TrainingConfig.from_env()
+        train_sentiment_pipeline(config=config, force=True)
+        logger.info("Hoàn tất quá trình huấn luyện sentiment tự động.")
+    except Exception as e:
+        logger.error(f"Lỗi trong quá trình huấn luyện sentiment tự động: {e}", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Log lifecycle events (có thể mở rộng để pre-load tài nguyên nếu cần)."""
-    logger.info("%s v%s starting...", settings.app_name, settings.app_version)
-    try:
-        yield
-    finally:
-        logger.info("%s shutting down...", settings.app_name)
+    """Xử lý logic khi khởi động và tắt ứng dụng."""
+    logger.info("Khởi động Sentiment Training Service...")
+    model_path = os.path.join("artifacts", "sentiment_mlp", "sentiment_mlp.joblib")
+    if not os.path.exists(model_path):
+        logger.info(f"Không tìm thấy mô hình tại {model_path}. Bắt đầu huấn luyện...")
+        training_thread = threading.Thread(target=run_training)
+        training_thread.start()
+    else:
+        logger.info(f"Đã tìm thấy mô hình tại {model_path}. Bỏ qua huấn luyện.")
+    yield
+    logger.info("Tắt Sentiment Training Service...")
 
 
 def create_application() -> FastAPI:

@@ -482,10 +482,7 @@ def train_sentiment_pipeline(
                     logger.warning("joblib chưa được cài đặt, bỏ qua bước lưu mô hình.")
                 else:
                     os.makedirs(config.model_output_dir, exist_ok=True)
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    model_path = os.path.join(
-                        config.model_output_dir, f"sentiment_mlp_{timestamp}.joblib"
-                    )
+                    model_path = os.path.join(config.model_output_dir, "sentiment_mlp.joblib")
                     joblib.dump(
                         {
                             "classifier": clf,
