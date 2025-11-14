@@ -272,6 +272,12 @@ const FeedbackSentiment = () => {
     try {
       setImporting(true);
       const result = await feedbackAPI.importFeedbacks(formData);
+    if (result.status === 'queued') {
+      const queuedMsg =
+        result.message ||
+        `Đã đưa ${result.queued || 0} dòng vào hàng đợi xử lý (task_id=${result.task_id})`;
+      message.success(queuedMsg);
+    } else {
       message.success(`Đã import ${result.imported} feedback thành công.`);
       if (result.failed > 0) {
         const warningMessage = result.log_file
@@ -280,6 +286,7 @@ const FeedbackSentiment = () => {
         message.warning(warningMessage);
       }
       await fetchFeedbacks();
+    }
     } catch (error) {
       const detail = error?.response?.data?.detail || 'Không thể import dữ liệu feedback';
       message.error(detail);
@@ -309,7 +316,15 @@ const FeedbackSentiment = () => {
     try {
       setImportingSimple(true);
       const result = await feedbackAPI.importFeedbacksSimple(formData);
-      message.success(`Đã import ${result.imported} feedback thành công và tự động phân tích sentiment/intent.`);
+    if (result.status === 'queued') {
+      const queuedMsg =
+        result.message ||
+        `Đã đưa ${result.queued || 0} dòng vào hàng đợi xử lý (task_id=${result.task_id})`;
+      message.success(queuedMsg);
+    } else {
+      message.success(
+        `Đã import ${result.imported} feedback thành công và tự động phân tích sentiment/intent.`
+      );
       if (result.failed > 0) {
         const warningMessage = result.log_file
           ? `Có ${result.failed} dòng lỗi. Xem log tại ${result.log_file}`
@@ -317,6 +332,7 @@ const FeedbackSentiment = () => {
         message.warning(warningMessage);
       }
       await fetchFeedbacks();
+    }
     } catch (error) {
       const detail = error?.response?.data?.detail || 'Không thể import dữ liệu feedback';
       message.error(detail);

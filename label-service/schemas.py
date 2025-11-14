@@ -199,11 +199,28 @@ class FeedbackSentimentListResponse(BaseModel):
 
 class FeedbackImportResponse(BaseModel):
     """Kết quả import feedback từ file Excel."""
-    imported: int = Field(..., ge=0, description="Số feedback import thành công")
-    failed: int = Field(..., ge=0, description="Số dòng bị lỗi và được ghi log")
+    imported: int = Field(0, ge=0, description="Số feedback import thành công")
+    failed: int = Field(0, ge=0, description="Số dòng bị lỗi và được ghi log")
     log_file: Optional[str] = Field(
         default=None,
         description="Đường dẫn tới file log chứa chi tiết các dòng lỗi (nếu có)",
+    )
+    queued: int = Field(
+        0,
+        ge=0,
+        description="Số dòng đang được xử lý nền (khi API trả về ngay)",
+    )
+    task_id: Optional[str] = Field(
+        default=None,
+        description="Mã tác vụ xử lý nền (nếu có)",
+    )
+    status: str = Field(
+        default="completed",
+        description="Trạng thái import: completed hoặc queued",
+    )
+    message: Optional[str] = Field(
+        default=None,
+        description="Thông điệp mô tả kết quả import",
     )
 
 

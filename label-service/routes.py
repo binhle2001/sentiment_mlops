@@ -1,15 +1,18 @@
 """API routes for label management."""
+import asyncio
 import csv
+import json
 import logging
+import os
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from uuid import UUID
+from uuid import UUID, uuid4
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, BackgroundTasks
 from fastapi.responses import JSONResponse
-import json
 
 from openpyxl import load_workbook
 
@@ -1098,7 +1101,7 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
 
     try:
         workbook = load_workbook(filename=BytesIO(content), data_only=True)
-    except Exception as exc:  # pragma: no cover - library-specific error
+    except Exception as exc:
         logger.error(f"Failed to read Excel file during import: {exc}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1117,8 +1120,6 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
         str(cell).strip().lower() if cell is not None else ""
         for cell in header_row
     ]
-    print(f"Normalized headers found in Excel file: {normalized_headers}")
-
     required_headers = ["content", "sentiment", "level1", "level2", "level3"]
     missing_columns = [col for col in required_headers if col not in normalized_headers]
     if missing_columns:
@@ -1127,230 +1128,26 @@ async def import_feedbacks_from_excel(file: UploadFile = File(...)):
             detail=f"File Excel thiếu các cột bắt buộc: {', '.join(missing_columns)}"
         )
 
-    header_index = {name: idx for idx, name in enumerate(normalized_headers)}
+    total_rows = max(sheet.max_row - 1, 0)
+    workbook.close()
 
-    def _normalize(value) -> str:
-        if value is None:
-            return ""
-        return str(value).strip()
-
-    inserted = 0
-    error_rows = []
-
-    with get_db() as conn:
-        labels = LabelCRUD.get_all(conn, skip=0, limit=100000)
-        labels_by_level = {1: {}, 2: {}, 3: {}}
-        for label in labels:
-            label_name = _normalize(label.get("name"))
-            if label_name:
-                labels_by_level[label["level"]][label_name.lower()] = label
-
-        for row_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
-            row_values = list(row) if row else []
-            if len(row_values) < len(normalized_headers):
-                row_values.extend([None] * (len(normalized_headers) - len(row_values)))
-
-            if all(
-                _normalize(row_values[header_index[col]]) == ""
-                for col in required_headers
-            ):
-                continue  # Skip empty row
-
-            def _get_value(column: str):
-                idx = header_index[column]
-                if idx >= len(row_values):
-                    return None
-                return row_values[idx]
-
-            raw_content = _get_value("content")
-            raw_sentiment = _get_value("sentiment")
-            raw_level1 = _get_value("level1")
-            raw_level2 = _get_value("level2")
-            raw_level3 = _get_value("level3")
-
-            print(f"Row {row_idx}: raw_content='{raw_content}', raw_sentiment='{raw_sentiment}', raw_level1='{raw_level1}', raw_level2='{raw_level2}', raw_level3='{raw_level3}'")
-
-            content_value = _normalize(raw_content)
-            sentiment_value = _normalize(raw_sentiment)
-            level1_value = _normalize(raw_level1)
-            level2_value = _normalize(raw_level2)
-            level3_value = _normalize(raw_level3)
-
-            row_errors = []
-            if not content_value:
-                row_errors.append("Thiếu nội dung feedback")
-
-            sentiment_enum = None
-            if not sentiment_value:
-                row_errors.append("Thiếu giá trị sentiment")
-            else:
-                try:
-                    sentiment_enum = SentimentLabel(sentiment_value.upper())
-                except ValueError:
-                    row_errors.append(f"Sentiment không hợp lệ: {sentiment_value}")
-
-            level1_label = None
-            level2_label = None
-            level3_label = None
-
-            if level1_value:
-                level1_label = labels_by_level[1].get(level1_value.lower())
-                if not level1_label:
-                    row_errors.append(f"Level1 '{level1_value}' không tồn tại trong hệ thống")
-            elif level2_value or level3_value:
-                row_errors.append("Phải cung cấp Level1 khi có Level2/Level3")
-
-            if level2_value:
-                if not level1_label:
-                    row_errors.append("Level2 yêu cầu Level1 hợp lệ")
-                else:
-                    level2_label = labels_by_level[2].get(level2_value.lower())
-                    if not level2_label:
-                        row_errors.append(f"Level2 '{level2_value}' không tồn tại trong hệ thống")
-                    elif level2_label["parent_id"] != level1_label["id"]:
-                        row_errors.append(
-                            f"Level2 '{level2_value}' không thuộc Level1 '{level1_label['name']}'"
-                        )
-
-            if level3_value:
-                if not level2_label:
-                    row_errors.append("Level3 yêu cầu Level2 hợp lệ")
-                else:
-                    level3_label = labels_by_level[3].get(level3_value.lower())
-                    if not level3_label:
-                        row_errors.append(f"Level3 '{level3_value}' không tồn tại trong hệ thống")
-                    elif level3_label["parent_id"] != level2_label["id"]:
-                        row_errors.append(
-                            f"Level3 '{level3_value}' không thuộc Level2 '{level2_label['name']}'"
-                        )
-
-            # Nếu có lỗi về sentiment, tự động phân loại thay vì bỏ qua
-            sentiment_label_value = None
-            confidence_score = 1.0
-            
-            if sentiment_enum is None:
-                # Tự động phân loại sentiment
-                try:
-                    logger.info(f"Row {row_idx}: Tự động phân loại sentiment cho feedback")
-                    sentiment_result = await call_sentiment_service(content_value)
-                    sentiment_label_value = sentiment_result.get("label")
-                    confidence_score = sentiment_result.get("score", 1.0)
-                    if sentiment_label_value:
-                        logger.info(f"Row {row_idx}: Đã phân loại sentiment: {sentiment_label_value}")
-                except Exception as e:
-                    logger.error(f"Row {row_idx}: Lỗi khi phân loại sentiment: {e}")
-                    row_errors.append(f"Không thể phân loại sentiment: {str(e)}")
-                    # Dùng giá trị mặc định nếu không phân loại được
-                    sentiment_label_value = SentimentLabel.NEUTRAL.value
-            else:
-                sentiment_label_value = sentiment_enum.value
-
-            feedback_data = FeedbackSentimentCreate(
-                feedback_text=content_value,
-                feedback_source=FeedbackSource.WEB,
-            )
-
-            level1_id = level1_label["id"] if level1_label else None
-            level2_id = level2_label["id"] if level2_label else None
-            level3_id = level3_label["id"] if level3_label else None
-            
-            # Kiểm tra xem có đủ nhãn và tất cả đều hợp lệ không
-            # Cần có đủ cả 3 nhãn (level1, level2, level3) và không có lỗi nào về label
-            has_all_labels = level1_id is not None and level2_id is not None and level3_id is not None
-            has_no_label_errors = not any("Level" in error or "level" in error.lower() for error in row_errors)
-            has_valid_sentiment = sentiment_enum is not None  # Sentiment từ Excel hợp lệ
-            
-            if has_all_labels and has_no_label_errors and has_valid_sentiment:
-                # Có đủ nhãn và tất cả đều hợp lệ -> đã được xác nhận (is_model_confirmed = True)
-                is_confirmed = True
-                logger.info(f"Row {row_idx}: Có đủ nhãn hợp lệ, lưu với is_model_confirmed = True")
-            else:
-                # Thiếu nhãn, có lỗi về nhãn, hoặc có lỗi về sentiment -> tự động phân loại lại intent
-                logger.info(f"Row {row_idx}: Có lỗi hoặc thiếu nhãn, sẽ tự động phân loại intent")
-                intent_result = await _classify_intent_for_feedback(content_value)
-                if intent_result:
-                    level1_id = intent_result['level1_id']
-                    level2_id = intent_result['level2_id']
-                    level3_id = intent_result['level3_id']
-                    # Tự động phân loại -> chờ xác nhận (is_model_confirmed = False)
-                    is_confirmed = False
-                else:
-                    # Không thể phân loại -> lưu không có intent
-                    level1_id = None
-                    level2_id = None
-                    level3_id = None
-                    is_confirmed = False
-
-            # Luôn import vào database, kể cả có lỗi
-            FeedbackSentimentCRUD.create(
-                conn,
-                feedback_data,
-                sentiment_label_value,
-                confidence_score=confidence_score,
-                level1_id=level1_id,
-                level2_id=level2_id,
-                level3_id=level3_id,
-                is_model_confirmed=is_confirmed,
-            )
-            inserted += 1
-            
-            # Ghi lỗi vào error_rows để log (nếu có)
-            if row_errors:
-                error_rows.append(
-                    {
-                        "row_index": row_idx,
-                        "content": content_value,
-                        "sentiment": sentiment_value,
-                        "level1": level1_value,
-                        "level2": level2_value,
-                        "level3": level3_value,
-                        "errors": row_errors,
-                    }
-                )
-
-    log_file_path = None
-    if error_rows:
-        # Thư mục logs đã được tạo khi startup, nhưng vẫn thử tạo lại nếu cần
-        try:
-            log_dir = Path(__file__).resolve().parent / "logs" / "feedback_import"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            # Đảm bảo có quyền ghi
-            import os
-            os.chmod(log_dir, 0o777)
-        except (PermissionError, OSError) as e:
-            # Fallback sang thư mục tạm nếu không có quyền
-            logger.warning(f"Không thể tạo thư mục logs: {e}. Dùng thư mục tạm.")
-            import tempfile
-            log_dir = Path(tempfile.gettempdir()) / "feedback_import_logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-        log_file_path = log_dir / f"errors_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
-        with log_file_path.open("w", newline="", encoding="utf-8") as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(["row_index", "content", "sentiment", "level1", "level2", "level3", "errors"])
-            for row in error_rows:
-                writer.writerow(
-                    [
-                        row["row_index"],
-                        row["content"],
-                        row["sentiment"],
-                        row["level1"],
-                        row["level2"],
-                        row["level3"],
-                        " | ".join(row["errors"]),
-                    ]
-                )
-
-    log_file_str = None
-    if log_file_path:
-        try:
-            log_file_str = str(log_file_path.relative_to(Path(__file__).resolve().parent))
-        except ValueError:
-            log_file_str = str(log_file_path)
+    task_id = str(uuid4())
+    asyncio.create_task(
+        _process_feedback_import_file(
+            file_bytes=content,
+            task_id=task_id,
+            original_filename=file.filename,
+        )
+    )
 
     return FeedbackImportResponse(
-        imported=inserted,
-        failed=len(error_rows),
-        log_file=log_file_str,
+        imported=0,
+        failed=0,
+        log_file=None,
+        queued=total_rows,
+        task_id=task_id,
+        status="queued",
+        message=f"Đã đưa {total_rows} dòng vào hàng đợi xử lý nền (task_id={task_id})",
     )
 
 
@@ -1400,185 +1197,356 @@ async def import_feedbacks_simple_from_excel(file: UploadFile = File(...)):
         str(cell).strip().lower() if cell is not None else ""
         for cell in header_row
     ]
-    
-    # Tìm các cột cần thiết
+
+    if not any(header in ["content", "nội dung", "feedback", "feedback_text", "text"] for header in normalized_headers):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File Excel phải có cột 'content'"
+        )
+
+    total_rows = max(sheet.max_row - 1, 0)
+    workbook.close()
+
+    task_id = str(uuid4())
+    asyncio.create_task(
+        _process_feedback_import_simple_file(
+            file_bytes=content,
+            task_id=task_id,
+            original_filename=file.filename,
+        )
+    )
+
+    return FeedbackImportResponse(
+        imported=0,
+        failed=0,
+        log_file=None,
+        queued=total_rows,
+        task_id=task_id,
+        status="queued",
+        message=f"Đã đưa {total_rows} dòng vào hàng đợi xử lý nền (task_id={task_id})",
+    )
+
+
+def _normalize_cell(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _resolve_feedback_source(value: str) -> FeedbackSource:
+    normalized = value.lower()
+    mapping = {
+        "web": FeedbackSource.WEB,
+        "app": FeedbackSource.APP,
+        "map": FeedbackSource.MAP,
+        "form khảo sát": FeedbackSource.SURVEY_FORM,
+        "survey": FeedbackSource.SURVEY_FORM,
+        "tổng đài": FeedbackSource.CALL_CENTER,
+        "call center": FeedbackSource.CALL_CENTER,
+    }
+    return mapping.get(normalized, FeedbackSource.WEB)
+
+
+def _write_import_error_log(error_rows: List[Dict[str, Any]], filename_prefix: str) -> Optional[str]:
+    if not error_rows:
+        return None
+
+    log_dir = Path(__file__).resolve().parent / "logs" / "feedback_import"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(log_dir, 0o777)
+    except (PermissionError, OSError) as exc:
+        logger.warning(f"Không thể tạo thư mục logs: {exc}. Dùng thư mục tạm.")
+        import tempfile
+        log_dir = Path(tempfile.gettempdir()) / "feedback_import_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+    log_file_path = log_dir / f"{filename_prefix}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    with log_file_path.open("w", newline="", encoding="utf-8") as csvfile:
+        fieldnames = ["row_index", "content", "sentiment", "level1", "level2", "level3", "errors"]
+        if "sentiment" not in error_rows[0]:
+            fieldnames = ["row_index", "content", "errors"]
+
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in error_rows:
+            writer.writerow(row)
+
+    try:
+        return str(log_file_path.relative_to(Path(__file__).resolve().parent))
+    except ValueError:
+        return str(log_file_path)
+
+
+async def _process_feedback_import_file(file_bytes: bytes, task_id: str, original_filename: Optional[str] = None):
+    logger.info(f"[ImportTask {task_id}] Bắt đầu xử lý import đầy đủ cho file {original_filename or 'upload.xlsx'}")
+    try:
+        workbook = load_workbook(filename=BytesIO(file_bytes), data_only=True)
+    except Exception as exc:
+        logger.error(f"[ImportTask {task_id}] Không thể đọc file Excel: {exc}")
+        return
+
+    sheet = workbook.active
+    header_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    if not header_row:
+        logger.error(f"[ImportTask {task_id}] File Excel không có dòng header")
+        return
+
+    normalized_headers = [_normalize_cell(cell).lower() for cell in header_row]
+    required_headers = ["content", "sentiment", "level1", "level2", "level3"]
+    missing_columns = [col for col in required_headers if col not in normalized_headers]
+    if missing_columns:
+        logger.error(f"[ImportTask {task_id}] File thiếu cột: {', '.join(missing_columns)}")
+        return
+
+    header_index = {name: idx for idx, name in enumerate(normalized_headers)}
+
+    def _get_value(row_values, column: str):
+        idx = header_index[column]
+        if idx >= len(row_values):
+            return None
+        return row_values[idx]
+
+    inserted = 0
+    error_rows: List[Dict[str, Any]] = []
+
+    with get_db() as conn:
+        labels = LabelCRUD.get_all(conn, skip=0, limit=100000)
+
+    labels_by_level = {1: {}, 2: {}, 3: {}}
+    for label in labels:
+        label_name = _normalize_cell(label.get("name"))
+        if label_name:
+            labels_by_level[label["level"]][label_name.lower()] = label
+
+    for row_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+        row_values = list(row) if row else []
+        if len(row_values) < len(normalized_headers):
+            row_values.extend([None] * (len(normalized_headers) - len(row_values)))
+
+        if all(_normalize_cell(row_values[header_index[col]]) == "" for col in required_headers):
+            continue
+
+        content_value = _normalize_cell(_get_value(row_values, "content"))
+        sentiment_value = _normalize_cell(_get_value(row_values, "sentiment"))
+        level1_value = _normalize_cell(_get_value(row_values, "level1"))
+        level2_value = _normalize_cell(_get_value(row_values, "level2"))
+        level3_value = _normalize_cell(_get_value(row_values, "level3"))
+
+        if not content_value:
+            error_rows.append(
+                {
+                    "row_index": row_idx,
+                    "content": content_value,
+                    "sentiment": sentiment_value,
+                    "level1": level1_value,
+                    "level2": level2_value,
+                    "level3": level3_value,
+                    "errors": "Thiếu nội dung feedback",
+                }
+            )
+            continue
+
+        row_errors = []
+        sentiment_enum = None
+        if sentiment_value:
+            try:
+                sentiment_enum = SentimentLabel(sentiment_value.upper())
+            except ValueError:
+                row_errors.append(f"Sentiment không hợp lệ: {sentiment_value}")
+        else:
+            row_errors.append("Thiếu sentiment")
+
+        level1_label = labels_by_level[1].get(level1_value.lower()) if level1_value else None
+        level2_label = labels_by_level[2].get(level2_value.lower()) if level2_value else None
+        level3_label = labels_by_level[3].get(level3_value.lower()) if level3_value else None
+
+        if level1_value and not level1_label:
+            row_errors.append(f"Level1 '{level1_value}' không tồn tại")
+        if level2_value:
+            if not level1_label:
+                row_errors.append("Level2 yêu cầu Level1 hợp lệ")
+            elif not level2_label:
+                row_errors.append(f"Level2 '{level2_value}' không tồn tại")
+            elif level2_label["parent_id"] != level1_label["id"]:
+                row_errors.append(f"Level2 '{level2_value}' không thuộc Level1 '{level1_label['name']}'")
+        if level3_value:
+            if not level2_label:
+                row_errors.append("Level3 yêu cầu Level2 hợp lệ")
+            elif not level3_label:
+                row_errors.append(f"Level3 '{level3_value}' không tồn tại")
+            elif level3_label["parent_id"] != level2_label["id"]:
+                row_errors.append(f"Level3 '{level3_value}' không thuộc Level2 '{level2_label['name']}'")
+
+        sentiment_label_value = sentiment_enum.value if sentiment_enum else None
+        confidence_score = 1.0
+        if not sentiment_label_value:
+            try:
+                sentiment_result = await call_sentiment_service(content_value)
+                sentiment_label_value = sentiment_result.get("label") or SentimentLabel.NEUTRAL.value
+                confidence_score = sentiment_result.get("score", 1.0)
+            except Exception as exc:
+                row_errors.append(f"Không thể phân loại sentiment: {exc}")
+                sentiment_label_value = SentimentLabel.NEUTRAL.value
+
+        level1_id = level1_label["id"] if level1_label else None
+        level2_id = level2_label["id"] if level2_label else None
+        level3_id = level3_label["id"] if level3_label else None
+        has_all_labels = level1_id and level2_id and level3_id
+        has_label_errors = any("level" in err.lower() for err in row_errors)
+        has_valid_sentiment = sentiment_enum is not None
+
+        if not (has_all_labels and not has_label_errors and has_valid_sentiment):
+            intent_result = await _classify_intent_for_feedback(content_value)
+            if intent_result:
+                level1_id = intent_result["level1_id"]
+                level2_id = intent_result["level2_id"]
+                level3_id = intent_result["level3_id"]
+            else:
+                level1_id = level2_id = level3_id = None
+            is_model_confirmed = False
+        else:
+            is_model_confirmed = True
+
+        feedback_data = FeedbackSentimentCreate(
+            feedback_text=content_value,
+            feedback_source=FeedbackSource.WEB,
+        )
+
+        try:
+            with get_db() as conn:
+                FeedbackSentimentCRUD.create(
+                    conn,
+                    feedback_data,
+                    sentiment_label_value,
+                    confidence_score=confidence_score,
+                    level1_id=level1_id,
+                    level2_id=level2_id,
+                    level3_id=level3_id,
+                    is_model_confirmed=is_model_confirmed,
+                )
+            inserted += 1
+        except Exception as exc:
+            row_errors.append(f"Lỗi lưu DB: {exc}")
+            logger.error(f"[ImportTask {task_id}] Lỗi lưu row {row_idx}: {exc}", exc_info=True)
+
+        if row_errors:
+            error_rows.append(
+                {
+                    "row_index": row_idx,
+                    "content": content_value,
+                    "sentiment": sentiment_value,
+                    "level1": level1_value,
+                    "level2": level2_value,
+                    "level3": level3_value,
+                    "errors": " | ".join(row_errors),
+                }
+            )
+
+    workbook.close()
+    log_file = _write_import_error_log(error_rows, filename_prefix=f"errors_full_{task_id}")
+    logger.info(
+        f"[ImportTask {task_id}] Hoàn thành import đầy đủ: inserted={inserted}, errors={len(error_rows)}, log={log_file}"
+    )
+
+
+async def _process_feedback_import_simple_file(file_bytes: bytes, task_id: str, original_filename: Optional[str] = None):
+    logger.info(f"[ImportTask {task_id}] Bắt đầu xử lý import đơn giản cho file {original_filename or 'upload.xlsx'}")
+    try:
+        workbook = load_workbook(filename=BytesIO(file_bytes), data_only=True)
+    except Exception as exc:
+        logger.error(f"[ImportTask {task_id}] Không thể đọc file Excel: {exc}")
+        return
+
+    sheet = workbook.active
+    header_row = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    if not header_row:
+        logger.error(f"[ImportTask {task_id}] File Excel không có dòng header")
+        return
+
+    normalized_headers = [_normalize_cell(cell).lower() for cell in header_row]
     content_col_idx = None
     source_col_idx = None
-    
     for idx, header in enumerate(normalized_headers):
         if header in ["content", "nội dung", "feedback", "feedback_text", "text"]:
             content_col_idx = idx
         elif header in ["source", "nguồn", "feedback_source"]:
             source_col_idx = idx
-    
+
     if content_col_idx is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File Excel phải có cột 'content' (hoặc 'nội dung', 'feedback', 'feedback_text', 'text')"
-        )
+        logger.error(f"[ImportTask {task_id}] Thiếu cột content")
+        return
 
     inserted = 0
-    error_rows = []
+    error_rows: List[Dict[str, Any]] = []
 
-    def _normalize(value) -> str:
-        if value is None:
-            return ""
-        return str(value).strip()
-
-    # Xử lý từng dòng
     for row_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
         row_values = list(row) if row else []
-        
-        # Lấy nội dung feedback
         if content_col_idx >= len(row_values):
             continue
-        content_value = _normalize(row_values[content_col_idx])
-        
+
+        content_value = _normalize_cell(row_values[content_col_idx])
         if not content_value:
-            continue  # Bỏ qua dòng trống
-        
-        # Lấy nguồn feedback (mặc định là 'web')
-        source_value = 'web'
-        if source_col_idx is not None and source_col_idx < len(row_values):
-            raw_source = _normalize(row_values[source_col_idx])
-            if raw_source:
-                # Chuyển đổi tên nguồn sang giá trị enum
-                source_map = {
-                    'web': 'web',
-                    'app': 'app',
-                    'map': 'map',
-                    'form khảo sát': 'form khảo sát',
-                    'tổng đài': 'tổng đài',
-                }
-                source_value = source_map.get(raw_source.lower(), 'web')
-        
-        # Tạo feedback và tự động phân tích
-        try:
-            feedback_data = FeedbackSentimentCreate(
-                feedback_text=content_value,
-                feedback_source=FeedbackSource(source_value)
-            )
-            
-            # Sử dụng logic tương tự như create_feedback_sentiment
-            # Step 1: Call sentiment service
-            sentiment_result = await call_sentiment_service(feedback_data.feedback_text)
-            sentiment_label = sentiment_result.get("label")
-            confidence_score = sentiment_result.get("score")
-            
-            if not sentiment_label or confidence_score is None:
-                error_rows.append({
+            error_rows.append(
+                {
                     "row_index": row_idx,
                     "content": content_value,
-                    "errors": ["Không thể phân tích sentiment"]
-                })
-                continue
-            
-            # Step 2: Get embedding for feedback
-            feedback_embedding = await call_embedding_service(feedback_data.feedback_text)
-            
-            level1_id = None
-            level2_id = None
-            level3_id = None
-            
-            if feedback_embedding:
-                # Step 3: Get top 10 intent candidates
-                with get_db() as conn:
-                    intent_candidates = FeedbackIntentCRUD.get_top_intents(
-                        conn,
-                        feedback_embedding,
-                        limit=10,
-                        top_level1=5,
-                        top_level2_total=15,
-                        top_level3_total=50
-                    )
-                    
-                    if intent_candidates:
-                        # Step 4: Use Gemini to select best intent
-                        try:
-                            gemini_service = get_gemini_service()
-                            selected_intent = gemini_service.select_best_intent(
-                                feedback_data.feedback_text,
-                                intent_candidates
-                            )
-                            if selected_intent:
-                                level1_id = selected_intent['level1']['id']
-                                level2_id = selected_intent['level2']['id']
-                                level3_id = selected_intent['level3']['id']
-                        except Exception as e:
-                            logger.warning(f"Gemini service error for row {row_idx}: {e}, continuing without intent")
-                
-                # Step 5: Save to database
-                # Tự động phân loại -> chờ xác nhận (is_model_confirmed = False)
-                with get_db() as conn:
-                    FeedbackSentimentCRUD.create(
-                        conn,
-                        feedback_data,
-                        sentiment_label,
-                        confidence_score,
-                        level1_id=level1_id,
-                        level2_id=level2_id,
-                        level3_id=level3_id,
-                        is_model_confirmed=False  # Tự động phân loại -> chờ xác nhận
-                    )
+                    "errors": "Thiếu nội dung feedback",
+                }
+            )
+            continue
+
+        source_value = "web"
+        if source_col_idx is not None and source_col_idx < len(row_values):
+            raw_source = _normalize_cell(row_values[source_col_idx])
+            if raw_source:
+                source_value = raw_source.lower()
+
+        feedback_source = _resolve_feedback_source(source_value)
+        feedback_data = FeedbackSentimentCreate(
+            feedback_text=content_value,
+            feedback_source=feedback_source,
+        )
+
+        try:
+            sentiment_result = await call_sentiment_service(content_value)
+            sentiment_label = sentiment_result.get("label") or SentimentLabel.NEUTRAL.value
+            confidence_score = sentiment_result.get("score", 1.0)
+
+            intent_result = await _classify_intent_for_feedback(content_value)
+            if intent_result:
+                level1_id = intent_result["level1_id"]
+                level2_id = intent_result["level2_id"]
+                level3_id = intent_result["level3_id"]
             else:
-                # Save without intent if embedding fails
-                with get_db() as conn:
-                    FeedbackSentimentCRUD.create(
-                        conn,
-                        feedback_data,
-                        sentiment_label,
-                        confidence_score,
-                        is_model_confirmed=False
-                    )
-            
+                level1_id = level2_id = level3_id = None
+
+            with get_db() as conn:
+                FeedbackSentimentCRUD.create(
+                    conn,
+                    feedback_data,
+                    sentiment_label,
+                    confidence_score=confidence_score,
+                    level1_id=level1_id,
+                    level2_id=level2_id,
+                    level3_id=level3_id,
+                    is_model_confirmed=False,
+                )
             inserted += 1
-            
-        except Exception as e:
-            logger.error(f"Error processing row {row_idx}: {e}", exc_info=True)
-            error_rows.append({
-                "row_index": row_idx,
-                "content": content_value,
-                "errors": [str(e)]
-            })
+        except Exception as exc:
+            logger.error(f"[ImportTask {task_id}] Lỗi xử lý row {row_idx}: {exc}", exc_info=True)
+            error_rows.append(
+                {
+                    "row_index": row_idx,
+                    "content": content_value,
+                    "errors": str(exc),
+                }
+            )
 
-    # Ghi log file nếu có lỗi
-    log_file_path = None
-    if error_rows:
-        # Thư mục logs đã được tạo khi startup, nhưng vẫn thử tạo lại nếu cần
-        try:
-            log_dir = Path(__file__).resolve().parent / "logs" / "feedback_import"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            # Đảm bảo có quyền ghi
-            import os
-            os.chmod(log_dir, 0o777)
-        except (PermissionError, OSError) as e:
-            # Fallback sang thư mục tạm nếu không có quyền
-            logger.warning(f"Không thể tạo thư mục logs: {e}. Dùng thư mục tạm.")
-            import tempfile
-            log_dir = Path(tempfile.gettempdir()) / "feedback_import_logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-        log_file_path = log_dir / f"errors_simple_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
-        with log_file_path.open("w", newline="", encoding="utf-8") as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(["row_index", "content", "errors"])
-            for row in error_rows:
-                writer.writerow([
-                    row["row_index"],
-                    row["content"],
-                    " | ".join(row["errors"]),
-                ])
-
-    log_file_str = None
-    if log_file_path:
-        try:
-            log_file_str = str(log_file_path.relative_to(Path(__file__).resolve().parent))
-        except ValueError:
-            log_file_str = str(log_file_path)
-
-    return FeedbackImportResponse(
-        imported=inserted,
-        failed=len(error_rows),
-        log_file=log_file_str,
+    workbook.close()
+    log_file = _write_import_error_log(error_rows, filename_prefix=f"errors_simple_{task_id}")
+    logger.info(
+        f"[ImportTask {task_id}] Hoàn thành import đơn giản: inserted={inserted}, errors={len(error_rows)}, log={log_file}"
     )
 
 
