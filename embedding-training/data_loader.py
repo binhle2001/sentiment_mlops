@@ -8,7 +8,7 @@ def get_training_data() -> List[Dict[str, Optional[str]]]:
         # Lấy tất cả các feedback đã được gán nhãn
         feedbacks = execute_query(conn, """
             SELECT fs.feedback_text, l.name as intent
-            FROM feedback_sentiment fs
+            FROM feedback_sentiments fs
             JOIN labels l ON fs.level3_id = l.id
             WHERE fs.level3_id IS NOT NULL AND fs.is_model_confirmed = TRUE;
         """, fetch="all")
