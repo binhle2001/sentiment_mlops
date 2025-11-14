@@ -26,6 +26,8 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_batch
 from dotenv import load_dotenv
+import httpx
+import os
 
 # Load environment variables if .env exists
 load_dotenv()
@@ -312,6 +314,67 @@ def import_feedback_sentiments(conn: psycopg2.extensions.connection, df: Optiona
     return len(records)
 
 
+def seed_label_embeddings(conn: psycopg2.extensions.connection) -> None:
+    """Seed embeddings cho tất cả labels sau khi import."""
+    # Lấy embedding service URL từ env hoặc default
+    embedding_service_url = os.getenv(
+        "EMBEDDING_SERVICE_URL", 
+        "http://localhost:8000/api/v1"
+    )
+    
+    # Lấy tất cả labels
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, name, description FROM labels ORDER BY level, id")
+        labels = cur.fetchall()
+    
+    if not labels:
+        print("   ℹ️  Không có labels để seed embeddings.")
+        return
+    
+    processed = 0
+    failed = 0
+    
+    for label_id, name, description in labels:
+        try:
+            # Tạo text cho embedding
+            text = name
+            if description and not pd.isna(description):
+                text = f"{name}. {description}"
+            
+            # Gọi embedding service
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    f"{embedding_service_url}/encode",
+                    json={"text": text}
+                )
+                response.raise_for_status()
+                result = response.json()
+                embedding = result.get("embedding", [])
+            
+            if not embedding:
+                print(f"   ⚠️  Không nhận được embedding cho label {label_id} ({name})")
+                failed += 1
+                continue
+            
+            # Update embedding vào database
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE labels SET embedding = %s WHERE id = %s",
+                    (embedding, label_id)
+                )
+            
+            processed += 1
+            if processed % 10 == 0:
+                print(f"   📊 Đã xử lý {processed}/{len(labels)} labels...")
+        
+        except Exception as e:
+            print(f"   ⚠️  Lỗi khi seed embedding cho label {label_id}: {e}")
+            failed += 1
+    
+    conn.commit()
+    print(f"   ✅ Đã seed embeddings: {processed} thành công, {failed} thất bại")
+
+
 def import_feedback_intents(conn: psycopg2.extensions.connection, df: Optional[pd.DataFrame]) -> int:
     """Import feedback_intents if sheet exists."""
     if df is None or df.empty:
@@ -421,6 +484,16 @@ def main() -> None:
         print(f"   ✅ Đã import {intent_count} feedback intents.")
 
         conn.commit()
+        
+        # Seed embeddings cho labels sau khi import
+        print("\n🔄 Đang seed embeddings cho labels...")
+        try:
+            seed_label_embeddings(conn)
+            print("   ✅ Đã seed embeddings cho labels.")
+        except Exception as e:
+            print(f"   ⚠️  Lỗi khi seed embeddings: {e}")
+            print("   💡 Bạn có thể chạy lại sau bằng: POST /admin/seed-label-embeddings")
+
         print("\n🎉 Hoàn tất khôi phục database!")
     except Exception as exc:
         conn.rollback()

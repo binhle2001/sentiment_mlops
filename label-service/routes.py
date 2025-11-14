@@ -1625,6 +1625,20 @@ async def auto_classify_feedbacks_without_intents():
                     "failed": 0
                 }
             
+            # Kiểm tra xem labels đã có embeddings chưa
+            labels_with_embeddings = LabelCRUD.get_all_with_embeddings(conn)
+            has_all_levels = (
+                len(labels_with_embeddings.get(1, [])) > 0 and
+                len(labels_with_embeddings.get(2, [])) > 0 and
+                len(labels_with_embeddings.get(3, [])) > 0
+            )
+            
+            if not has_all_levels:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Labels chưa có embeddings. Vui lòng chạy endpoint POST /admin/seed-label-embeddings trước để seed embeddings cho labels."
+                )
+            
             logger.info(f"Bắt đầu tự động phân loại intent cho {len(feedbacks)} feedback")
             
             classified = 0
