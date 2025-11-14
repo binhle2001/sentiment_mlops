@@ -6,3 +6,4 @@ torch
 optimum[onnxruntime]
 pydantic
 pydantic-settings
+jinja2>=2.8
