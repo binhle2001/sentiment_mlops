@@ -672,13 +672,24 @@ class FeedbackSentimentCRUD:
             update_fields.append("level3_id = %s")
             params.append(new_level3_id)
 
+        # Nếu có thay đổi sentiment hoặc intent và không chỉ định is_model_confirmed
+        # thì kiểm tra xem có phải đang reset về False không
+        # (chỉ reset nếu đang từ True -> False, không reset nếu đang từ False -> True)
         should_reset_confirmation = (
             "is_model_confirmed" not in update_payload
             and (sentiment_changed or level_changed)
             and existing.get("is_model_confirmed")
         )
 
-        if should_reset_confirmation:
+        # Nếu có chỉ định is_model_confirmed trong payload, dùng giá trị đó
+        if "is_model_confirmed" in update_payload:
+            is_confirmed = update_payload["is_model_confirmed"]
+            if is_confirmed != existing.get("is_model_confirmed"):
+                update_fields.append("is_model_confirmed = %s")
+                params.append(is_confirmed)
+        elif should_reset_confirmation:
+            # Chỉ reset về False nếu đang từ True và có thay đổi
+            # (logic cũ - giữ lại để tương thích với các trường hợp đặc biệt)
             update_fields.append("is_model_confirmed = %s")
             params.append(False)
 
