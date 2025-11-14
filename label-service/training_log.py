@@ -57,6 +57,23 @@ def get_last_successful_run(
             return result[0] if result else None
 
 
+def is_training_in_progress(service_name: str) -> bool:
+    """Kiểm tra xem service có đang trong quá trình training không."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {METADATA_TABLE}
+                WHERE service_name = %s AND status = 'running'
+                LIMIT 1;
+                """,
+                (service_name,),
+            )
+            result = cur.fetchone()
+            return result[0] > 0 if result else False
+
+
 @contextmanager
 def training_run_logging(
     service_name: str, triggered_by: str

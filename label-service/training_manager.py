@@ -69,12 +69,12 @@ class TrainingManager:
             with conn.cursor() as cur:
                 query = """
                     SELECT COUNT(*)
-                    FROM feedback_sentiment
+                    FROM feedback_sentiments
                     WHERE is_model_confirmed = TRUE
                 """
                 params = []
                 if last_run_time:
-                    query += " AND updated_at > %s"
+                    query += " AND created_at > %s"
                     params.append(last_run_time)
 
                 cur.execute(query, tuple(params))

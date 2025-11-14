@@ -41,6 +41,7 @@ from schemas import (
 )
 from config import get_settings
 from training_manager import get_training_manager
+from training_log import is_training_in_progress
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -64,6 +65,7 @@ def health_check():
     summary="Kiểm tra trạng thái trigger huấn luyện"
 )
 async def training_status():
+    """Kiểm tra trạng thái training của sentiment và embedding services."""
     try:
         manager = get_training_manager()
     except RuntimeError:
@@ -71,8 +73,32 @@ async def training_status():
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Training manager chưa được khởi tạo"
         )
-    status_payload = await manager.get_status()
-    return status_payload
+    
+    # Kiểm tra trạng thái training
+    sentiment_training = is_training_in_progress("sentiment")
+    embedding_training = is_training_in_progress("embedding")
+    
+    status_info = {
+        "sentiment": {
+            "is_training": sentiment_training,
+            "message": "🔄 Đang training sentiment model" if sentiment_training else "✅ Sentiment model sẵn sàng"
+        },
+        "embedding": {
+            "is_training": embedding_training,
+            "message": "🔄 Đang training embedding model" if embedding_training else "✅ Embedding model sẵn sàng"
+        },
+        "warning": None
+    }
+    
+    # Thêm cảnh báo nếu cả hai đang training
+    if sentiment_training and embedding_training:
+        status_info["warning"] = "⚠️  Cả sentiment và embedding đang training - các service có thể bị chậm"
+    elif sentiment_training:
+        status_info["warning"] = "⚠️  Đang training sentiment - embedding service có thể bị chậm"
+    elif embedding_training:
+        status_info["warning"] = "⚠️  Đang training embedding - sentiment service có thể bị chậm"
+    
+    return status_info
 
 
 @router.post(
@@ -481,6 +507,14 @@ def delete_label(label_id: int):
 
 async def call_sentiment_service(text: str) -> dict:
     """Call the sentiment analysis service to classify text."""
+    # Kiểm tra xem có đang training embedding không
+    if is_training_in_progress("embedding"):
+        logger.warning("⚠️  Đang training embedding model - sentiment service có thể bị chậm hoặc không khả dụng")
+    
+    # Kiểm tra xem có đang training sentiment không
+    if is_training_in_progress("sentiment"):
+        logger.warning("🔄 Đang training sentiment model - sentiment service có thể không khả dụng, yêu cầu sẽ phải chờ")
+    
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -505,6 +539,14 @@ async def call_sentiment_service(text: str) -> dict:
 
 async def call_embedding_service(text: str) -> list:
     """Call the embedding service to get text embedding."""
+    # Kiểm tra xem có đang training sentiment không
+    if is_training_in_progress("sentiment"):
+        logger.warning("⚠️  Đang training sentiment model - embedding service có thể bị chậm hoặc không khả dụng")
+    
+    # Kiểm tra xem có đang training embedding không
+    if is_training_in_progress("embedding"):
+        logger.warning("🔄 Đang training embedding model - embedding service có thể không khả dụng, yêu cầu sẽ phải chờ")
+    
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
